@@ -271,19 +271,24 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
 
-  // BB names a managed worktree's branch itself, and git refuses a bare `git push` from a
-  // branch whose upstream has another name. So once the worktree exists, its branch takes
-  // the pull request's name, which it keeps its upstream through.
-  async function renameBranchToPullRequestHead(environmentId: string, headRefName: string) {
+  // BB names a managed worktree's branch itself. Git refuses a bare `git push` from a branch
+  // whose upstream has another name, and BB looks for the pull request of the branch's own
+  // name. So once the worktree exists, its branch takes the pull request's name, which it
+  // keeps its upstream through. A new thread has no environment until BB starts on its worktree.
+  async function renameBranchToPullRequestHead(threadId: string, headRefName: string) {
     const deadline = Date.now() + PROVISIONING_WAIT_MS;
-    let environment = await bb.sdk.environments.get({ environmentId });
-    while (environment.status === "provisioning" && Date.now() < deadline) {
+    for (;;) {
+      const { environmentId } = await bb.sdk.threads.get({ threadId });
+      const environment = environmentId === null ? null : await bb.sdk.environments.get({ environmentId });
+      if (environment !== null && environment.status !== "provisioning") {
+        const { status, path, branchName, hostId } = environment;
+        if (status !== "ready" || path === null || branchName === null) throw new Error(`its worktree is ${status}`);
+        await host.call("renameBranchToPullRequestHead", { worktreePath: path, createdBranch: branchName, headRefName }, { hostId });
+        return;
+      }
+      if (Date.now() >= deadline) throw new Error("its worktree was not ready in time");
       await new Promise((resolve) => setTimeout(resolve, 1000));
-      environment = await bb.sdk.environments.get({ environmentId });
     }
-    const { status, path, branchName, hostId } = environment;
-    if (status !== "ready" || path === null || branchName === null) throw new Error(`its worktree is ${status}`);
-    await host.call("renameBranchToPullRequestHead", { worktreePath: path, createdBranch: branchName, headRefName }, { hostId });
   }
 
   bb.rpc.register(rpcContract, {
@@ -334,8 +339,8 @@ export default async function plugin(bb: BbPluginApi) {
         origin: "plugin",
       });
       // Not waited for: the worktree can take minutes to set up, and the thread is usable meanwhile.
-      if (prepared.tracksHeadBranch && thread.environmentId !== null) {
-        void renameBranchToPullRequestHead(thread.environmentId, input.headRefName).catch((error: unknown) => {
+      if (prepared.tracksHeadBranch) {
+        void renameBranchToPullRequestHead(thread.id, input.headRefName).catch((error: unknown) => {
           bb.log.warn(`Left the branch of ${input.repository}#${input.number}'s thread as BB named it: ${error instanceof Error ? error.message : String(error)}`);
         });
       }
