@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
 import { hostContract } from "./contract.js";
-import { pullRequestSourceRef } from "./git-ref.js";
+import { preparePullRequestBase } from "./git-ref.js";
 import { fetchPullRequests } from "./pr-search.js";
 import { sortPullRequests } from "./pr-list.js";
 
@@ -36,14 +36,16 @@ export default experimental_defineHostEntry({
       const pullRequests = fetched.value;
       return { pullRequests: sortPullRequests(pullRequests, "STATUS") };
     },
-    async preparePullRequestBranch({ projectPath, repository, number }, context) {
-      const remote = await run("git", ["-C", projectPath, "remote", "get-url", "origin"], context.signal);
-      if (normalizeRemote(remote) !== repository.toLowerCase()) throw new Error(`Project origin does not match ${repository}.`);
-      // Keep the PR head outside refs/remotes. BB refreshes and prunes the
-      // project's remote-tracking refs before provisioning a worktree.
-      const ref = pullRequestSourceRef(number);
-      await run("git", ["-C", projectPath, "fetch", "--force", "origin", `+refs/pull/${number}/head:${ref}`], context.signal);
-      return { ref };
+    async preparePullRequestBranch({ projectPath, repository, number, headRefName }, context) {
+      const git = (...args: string[]) => run("git", ["-C", projectPath, ...args], context.signal);
+      if (normalizeRemote(await git("remote", "get-url", "origin")) !== repository.toLowerCase()) throw new Error(`Project origin does not match ${repository}.`);
+      return preparePullRequestBase(number, headRefName, git);
+    },
+    // Fails, leaving the branch as BB named it, when the pull request's branch is already a
+    // local branch, as it is while the thread that opened the pull request still has it.
+    async renameBranchToPullRequestHead({ worktreePath, createdBranch, headRefName }, context) {
+      await run("git", ["-C", worktreePath, "branch", "-m", createdBranch, headRefName], context.signal);
+      return null;
     },
   },
 });

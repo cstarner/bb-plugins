@@ -101,6 +101,8 @@ const listKey = (repository: string) => `${LIST_KEY_PREFIX}${repository.toLowerC
 const VIEW_KEY = "pull-request-view";
 // The single list every repository shared before lists were saved per repository.
 const LEGACY_LIST_KEY = "pull-request-list-v2";
+// How long a new thread's worktree is given to finish setting up before its branch is left alone.
+const PROVISIONING_WAIT_MS = 10 * 60_000;
 
 export default async function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({
@@ -269,6 +271,21 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
 
+  // BB names a managed worktree's branch itself, and git refuses a bare `git push` from a
+  // branch whose upstream has another name. So once the worktree exists, its branch takes
+  // the pull request's name, which it keeps its upstream through.
+  async function renameBranchToPullRequestHead(environmentId: string, headRefName: string) {
+    const deadline = Date.now() + PROVISIONING_WAIT_MS;
+    let environment = await bb.sdk.environments.get({ environmentId });
+    while (environment.status === "provisioning" && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      environment = await bb.sdk.environments.get({ environmentId });
+    }
+    const { status, path, branchName, hostId } = environment;
+    if (status !== "ready" || path === null || branchName === null) throw new Error(`its worktree is ${status}`);
+    await host.call("renameBranchToPullRequestHead", { worktreePath: path, createdBranch: branchName, headRefName }, { hostId });
+  }
+
   bb.rpc.register(rpcContract, {
     prs_list: () => readSavedState(),
     prs_refresh: ({ repository, unlessRefreshedWithinSeconds }) => refreshPullRequests(repository, unlessRefreshedWithinSeconds),
@@ -304,7 +321,7 @@ export default async function plugin(bb: BbPluginApi) {
       const source = project.sources.find((candidate) => candidate.isDefault) ?? project.sources[0];
       if (source === undefined) throw new Error("The matching BB project has no workspace source.");
       const prepared = await host.call("preparePullRequestBranch", {
-        projectPath: source.path, repository: input.repository, number: input.number,
+        projectPath: source.path, repository: input.repository, number: input.number, headRefName: input.headRefName,
       }, { hostId: source.hostId });
       const thread = await bb.sdk.threads.spawn({
         projectId: project.id,
@@ -316,6 +333,12 @@ export default async function plugin(bb: BbPluginApi) {
         title: `PR #${input.number}: ${input.title}`,
         origin: "plugin",
       });
+      // Not waited for: the worktree can take minutes to set up, and the thread is usable meanwhile.
+      if (prepared.tracksHeadBranch && thread.environmentId !== null) {
+        void renameBranchToPullRequestHead(thread.environmentId, input.headRefName).catch((error: unknown) => {
+          bb.log.warn(`Left the branch of ${input.repository}#${input.number}'s thread as BB named it: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      }
       await bb.storage.kv.set(linkKey(input.repository, input.number), thread.id);
       const list = await readRepositoryList(input.repository);
       if (list !== null) {

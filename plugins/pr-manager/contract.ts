@@ -29,8 +29,17 @@ export const hostContract = defineRpcContract({
     }),
     output: z.object({ pullRequests: z.array(hostPullRequestSchema) }),
   },
+  // `ref` is what the thread's worktree is created from. `tracksHeadBranch` says it is
+  // origin's own branch for the pull request, so the worktree's branch has it as upstream.
   preparePullRequestBranch: {
-    input: z.object({ projectPath: z.string().min(1), repository: repositoryNameSchema, number: z.number().int().positive() }),
-    output: z.object({ ref: z.string() }),
+    input: z.object({
+      projectPath: z.string().min(1), repository: repositoryNameSchema, number: z.number().int().positive(),
+      headRefName: z.string().min(1),
+    }),
+    output: z.object({ ref: z.string(), tracksHeadBranch: z.boolean() }),
+  },
+  renameBranchToPullRequestHead: {
+    input: z.object({ worktreePath: z.string().min(1), createdBranch: z.string().min(1), headRefName: z.string().min(1) }),
+    output: z.null(),
   },
 });
