@@ -9,6 +9,7 @@
 // terminal can be closed once it exits.
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { OUTPUT_ADDED, PRESETS_CHANGED, RUNS_CHANGED } from "./channels.js";
 import { messageOf } from "./errors.js";
 import { parseStoredPresets, presetsSchema, type Preset } from "./presets.js";
 import {
@@ -25,14 +26,6 @@ import {
 } from "./runs.js";
 import { outputMentions, stripAnsiStreaming } from "./terminal-text.js";
 import { browserTabFor, panelTabsSchema, withTab, type PanelTab } from "./tabs.js";
-
-/** Realtime channels app.tsx listens on to know its copy is stale. */
-/** Payload `{ projectId }`: that project's list of commands was edited. */
-export const PRESETS_CHANGED = "presets-changed";
-/** Payload `{ threadId }`: a run was added, removed, or changed status. */
-export const RUNS_CHANGED = "runs-changed";
-/** Payload `{ threadId, runId }`: a run printed more. */
-export const OUTPUT_ADDED = "output-added";
 
 // One list per project: the command that starts one repo's dev server means
 // nothing in another.
