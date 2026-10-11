@@ -1,5 +1,8 @@
 import type { HostPullRequest } from "./contract.js";
-import { classifyPullRequest, latestCheckRuns, normalizeCheck, summarizePullRequest, type RollupEntry } from "./pr-status.js";
+import {
+  classifyPullRequest, classifyWithFeedbackMuted, latestCheckRuns, latestUnaddressedFeedbackAt, normalizeCheck,
+  summarizePullRequest, summarizeWithFeedbackMuted, type RollupEntry,
+} from "./pr-status.js";
 
 // Runs the `gh` command with the given arguments and resolves to what it printed.
 export type Gh = (args: string[]) => Promise<string>;
@@ -139,10 +142,14 @@ function describePullRequest(details: PullRequestDetails): HostPullRequest {
     comments: details.comments.nodes.map((comment) => ({ author: actorName(comment.author), isBot: isBot(comment.author), createdAt: comment.createdAt })),
     checks: latestCheckRuns(rollup.map((entry) => normalizeCheck({ ...entry, workflowName: entry.checkSuite?.workflowRun?.workflow?.name }))) };
   const status = classifyPullRequest(input);
+  const latestFeedbackAt = status === "FEEDBACK" ? latestUnaddressedFeedbackAt(input) : null;
+  const statusWhenMuted = classifyWithFeedbackMuted(input);
   return { id: details.id, repository: details.repository.nameWithOwner, number: details.number, title: details.title, url: details.url, status,
     summary: summarizePullRequest(input, status), isDraft: details.isDraft, headRefName: details.headRefName,
     baseRefName: details.baseRefName, createdAt: details.createdAt, updatedAt: details.updatedAt, mergedAt: details.mergedAt,
-    changeMarker: changeMarker(details.updatedAt, status === "MERGED" ? null : checks) };
+    changeMarker: changeMarker(details.updatedAt, status === "MERGED" ? null : checks),
+    unaddressedFeedback: latestFeedbackAt === null ? null
+      : { latestAt: latestFeedbackAt, statusWhenMuted, summaryWhenMuted: summarizeWithFeedbackMuted(input, statusWhenMuted) } };
 }
 
 // Your open pull requests in `repository` and those merged since `since`. The searches

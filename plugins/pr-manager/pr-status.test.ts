@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  approvedBy, classifyPullRequest, latestCheckRuns, normalizeCheck, summarizePullRequest, unaddressedFeedbackFrom,
+  approvedBy, classifyPullRequest, classifyWithFeedbackMuted, latestCheckRuns, latestUnaddressedFeedbackAt, normalizeCheck,
+  summarizePullRequest, summarizeWithFeedbackMuted, unaddressedFeedbackFrom,
   type PullRequestStatusInput, type RollupEntry,
 } from "./pr-status.js";
 const rollup = (entries: RollupEntry[]) => latestCheckRuns(entries.map(normalizeCheck));
@@ -148,6 +149,34 @@ describe("unaddressedFeedbackFrom", () => {
     });
     expect(unaddressedFeedbackFrom(input)).toEqual([]);
     expect(classifyPullRequest(input)).toBe("OPEN");
+  });
+});
+
+describe("muted feedback", () => {
+  it("dates unaddressed feedback by its newest review or comment", () => {
+    expect(latestUnaddressedFeedbackAt(base({
+      requestedReviewers: [],
+      reviews: [review("tilgovi", "COMMENTED", "2026-08-19T10:00:00Z"), review("tilgovi", "COMMENTED", "2026-08-19T12:00:00Z")],
+      comments: [comment("danielbachhuber", "2026-08-19T11:00:00Z")],
+    }))).toBe("2026-08-19T12:00:00Z");
+    expect(latestUnaddressedFeedbackAt(base({ reviews: [review("octocat", "COMMENTED")] }))).toBeNull();
+  });
+  it("waits for the requested reviewers once a comment like \"wait for octocat\" is muted", () => {
+    const input = base({ reviews: [review("tilgovi", "COMMENTED")] });
+    expect(classifyPullRequest(input)).toBe("FEEDBACK");
+    expect(classifyWithFeedbackMuted(input)).toBe("WAITING");
+    expect(summarizeWithFeedbackMuted(input, "WAITING")).toBe("Muted feedback from tilgovi · Waiting for octocat");
+  });
+  it("waits rather than reading as open when nobody is requested", () => {
+    const input = base({ reviewDecision: "", requestedReviewers: [], reviews: [review("tilgovi", "COMMENTED")] });
+    expect(classifyWithFeedbackMuted(input)).toBe("WAITING");
+    expect(summarizeWithFeedbackMuted(input, "WAITING")).toBe("Muted feedback from tilgovi · waiting for more");
+  });
+  it("shows another reviewer's approval once the feedback is muted", () => {
+    const approved = base({ reviewDecision: "", requestedReviewers: [], reviews: [review("octocat", "APPROVED"), review("hubot", "COMMENTED")] });
+    expect(classifyWithFeedbackMuted(approved)).toBe("APPROVED");
+    expect(summarizeWithFeedbackMuted(approved, "APPROVED")).toBe("Muted feedback from hubot · Approved by octocat; all requested reviews are complete");
+    expect(classifyWithFeedbackMuted({ ...approved, requestedReviewers: ["defunkt"] })).toBe("PART_APPROVED");
   });
 });
 

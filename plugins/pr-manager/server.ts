@@ -1,6 +1,6 @@
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { hostContract, repositoryNameSchema, type HostPullRequest } from "./contract.js";
+import { hostContract, hostPullRequestSchema, repositoryNameSchema, type HostPullRequest } from "./contract.js";
 import { PULL_REQUEST_STATUSES } from "./pr-status.js";
 import { SORT_ORDERS, sortPullRequests } from "./pr-list.js";
 import { buildThreadPrompt } from "./thread-prompt.js";
@@ -21,6 +21,11 @@ const pullRequestSchema = z.object({
   threadArchived: z.boolean().default(false),
   // Both missing from lists saved before refreshes reused unchanged entries.
   id: z.string().optional(), changeMarker: z.string().optional(),
+  // Missing from lists saved before feedback could be muted.
+  unaddressedFeedback: hostPullRequestSchema.shape.unaddressedFeedback.optional(),
+  // Never saved: worked out from the muted feedback each time the list is read, and
+  // true while `status` and `summary` are the muted ones.
+  feedbackMuted: z.boolean().default(false),
 });
 export type PullRequest = z.infer<typeof pullRequestSchema>;
 
@@ -64,6 +69,12 @@ export const rpcContract = defineRpcContract({
     input: z.object({ repository: z.string(), number: z.number().int().positive() }),
     output: z.object({ threadId: z.string().nullable(), archived: z.boolean() }),
   },
+  // Muting shows a FEEDBACK pull request as it would be without that feedback, until
+  // newer feedback arrives.
+  prs_set_feedback_muted: {
+    input: z.object({ repository: repositoryNameSchema, number: z.number().int().positive(), muted: z.boolean() }),
+    output: savedStateSchema,
+  },
   prs_create_thread: {
     input: z.object({
       repository: z.string(), number: z.number().int().positive(), title: z.string(),
@@ -83,6 +94,8 @@ function gitHubRepository(remote: string | null): string | null {
 const normalizeGitHubRepository = (remote: string | null) => gitHubRepository(remote)?.toLowerCase() ?? null;
 
 const linkKey = (repository: string, number: number) => `thread:${repository.toLowerCase()}#${number}`;
+// Holds when the newest feedback arrived that was muted; anything later is unmuted.
+const mutedFeedbackKey = (repository: string, number: number) => `muted-feedback:${repository.toLowerCase()}#${number}`;
 const LIST_KEY_PREFIX = "pull-requests:";
 const listKey = (repository: string) => `${LIST_KEY_PREFIX}${repository.toLowerCase()}`;
 const VIEW_KEY = "pull-request-view";
@@ -144,8 +157,19 @@ export default async function plugin(bb: BbPluginApi) {
       : repositories.find((candidate) => listKey(candidate.repository) === listKey(savedRepository));
     const selectedRepository = repository !== undefined ? findRepository(repositories, repository)
       : saved?.repository ?? repositories[0]?.repository ?? null;
-    const list = selectedRepository === null ? null : await readRepositoryList(selectedRepository);
+    const savedList = selectedRepository === null ? null : await readRepositoryList(selectedRepository);
+    const list = savedList === null ? null : { ...savedList, prs: await Promise.all(savedList.prs.map(applyMutedFeedback)) };
     return { repositories, selectedRepository, sortOrder: view.sortOrder, list };
+  }
+
+  // The saved list keeps the status GitHub's data gives, which is what the next refresh
+  // compares against, so muting is applied on the way out instead.
+  async function applyMutedFeedback(pr: PullRequest): Promise<PullRequest> {
+    const feedback = pr.unaddressedFeedback ?? null;
+    if (feedback === null) return pr;
+    const mutedUpTo = await bb.storage.kv.get<string>(mutedFeedbackKey(pr.repository, pr.number));
+    if (mutedUpTo === undefined || feedback.latestAt > mutedUpTo) return pr;
+    return { ...pr, status: feedback.statusWhenMuted, summary: feedback.summaryWhenMuted, feedbackMuted: true };
   }
 
   async function saveView(view: View) {
@@ -184,7 +208,7 @@ export default async function plugin(bb: BbPluginApi) {
         ...pr, key: `${pr.repository}#${pr.number}`, projectId: project?.id ?? null,
         projectName: project?.name ?? null, threadId: thread?.id ?? null,
         threadTitle: thread?.title ?? thread?.titleFallback ?? null,
-        threadArchived: thread !== null && thread.archivedAt !== null,
+        threadArchived: thread !== null && thread.archivedAt !== null, feedbackMuted: false,
       });
     }
     return prs;
@@ -200,7 +224,8 @@ export default async function plugin(bb: BbPluginApi) {
     const projectHostIds = new Set(context.projects.flatMap((project) => project.sources.map((source) => source.hostId)));
     const queryHost = connected.find((candidate) => projectHostIds.has(candidate.id)) ?? connected[0]!;
     const savedPullRequests = ((await readRepositoryList(repository))?.prs ?? [])
-      .flatMap(({ id, changeMarker, ...pr }) => id === undefined || changeMarker === undefined ? [] : [{ ...pr, id, changeMarker }]);
+      .flatMap(({ id, changeMarker, unaddressedFeedback, ...pr }) => id === undefined || changeMarker === undefined || unaddressedFeedback === undefined
+        ? [] : [{ ...pr, id, changeMarker, unaddressedFeedback }]);
     const raw = await host.call("listPullRequests", {
       repository, mergedWithinDays: Number(mergedWithinDays), maximumMergedPullRequests: Number(maximumMergedPullRequests),
       savedPullRequests,
@@ -255,6 +280,15 @@ export default async function plugin(bb: BbPluginApi) {
     prs_resolve_thread: async ({ repository, number }) => {
       const linked = await resolveLinkedThread(repository, number);
       return { threadId: linked?.threadId ?? null, archived: linked?.archived ?? false };
+    },
+    prs_set_feedback_muted: async ({ repository, number, muted }) => {
+      if (!muted) await bb.storage.kv.delete(mutedFeedbackKey(repository, number));
+      else {
+        const feedback = (await readRepositoryList(repository))?.prs.find((candidate) => candidate.number === number)?.unaddressedFeedback ?? null;
+        if (feedback === null) throw new Error(`${repository}#${number} has no feedback to mute.`);
+        await bb.storage.kv.set(mutedFeedbackKey(repository, number), feedback.latestAt);
+      }
+      return readSavedState(repository);
     },
     prs_create_thread: async (input) => {
       const projects = await bb.sdk.projects.list();

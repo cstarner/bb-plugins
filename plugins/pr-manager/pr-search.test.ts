@@ -173,6 +173,21 @@ describe("fetchPullRequests", () => {
     expect(fetched[3]).toBe(saved[2]);
   });
 
+  it("says what a pull request with feedback shows while that feedback is muted", async () => {
+    const commentedOn = (pr: GitHubPullRequest) => ({
+      ...details(pr), reviews: { nodes: [{ state: "COMMENTED", submittedAt: "2026-08-30T00:00:00Z", author: { __typename: "User", login: "octocat" } }] },
+    });
+    const gh = async (args: string[]) => args.some((arg) => arg.startsWith("search="))
+      ? searchPage(args.some((arg) => arg.includes("is:merged")) ? [] : [listed(pullRequest(1))])
+      : JSON.stringify({ data: { nodes: [commentedOn(pullRequest(1))] } });
+    const [fetched] = await fetchPullRequests({ repository: "octo/widgets", since: "2026-08-18", maximumMergedPullRequests: 50, savedPullRequests: [] }, gh);
+    expect(fetched).toMatchObject({
+      status: "FEEDBACK",
+      unaddressedFeedback: { latestAt: "2026-08-30T00:00:00Z", statusWhenMuted: "WAITING", summaryWhenMuted: "Muted feedback from octocat · waiting for more" },
+    });
+    expect((await gitHub([pullRequest(1)]).fetch([]))[0]!.unaddressedFeedback).toBeNull();
+  });
+
   it("fetches a saved pull request again once it has been merged", async () => {
     const saved = await gitHub([pullRequest(1)]).fetch([]);
     const fetched = await gitHub([pullRequest(1, { updatedAt: "2026-09-05T00:00:00Z", mergedAt: "2026-09-05T00:00:00Z" })]).fetch(saved);

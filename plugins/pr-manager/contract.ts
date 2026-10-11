@@ -3,7 +3,7 @@ import { z } from "zod";
 import { PULL_REQUEST_STATUSES } from "./pr-status.js";
 
 export const repositoryNameSchema = z.string().regex(/^[^/\s]+\/[^/\s]+$/);
-const normalizedPullRequestSchema = z.object({
+export const hostPullRequestSchema = z.object({
   // GitHub's own id for the pull request, which the next refresh asks for its checks by.
   id: z.string(),
   repository: z.string(), number: z.number().int().positive(), title: z.string(), url: z.string().url(),
@@ -12,17 +12,22 @@ const normalizedPullRequestSchema = z.object({
   // Changes whenever anything the status or summary is built from does, so an equal
   // marker on the next refresh means the saved entry is still right.
   changeMarker: z.string(),
+  // Set while the status is FEEDBACK: when the newest of that feedback arrived, and what
+  // the pull request shows instead while feedback up to then is muted.
+  unaddressedFeedback: z.object({
+    latestAt: z.string(), statusWhenMuted: z.enum(PULL_REQUEST_STATUSES), summaryWhenMuted: z.string(),
+  }).nullable(),
 });
-export type HostPullRequest = z.infer<typeof normalizedPullRequestSchema>;
+export type HostPullRequest = z.infer<typeof hostPullRequestSchema>;
 export const hostContract = defineRpcContract({
   listPullRequests: {
     input: z.object({
       repository: repositoryNameSchema,
       mergedWithinDays: z.number().int().min(1).max(90), maximumMergedPullRequests: z.number().int().min(1).max(100),
       // The entries from the last refresh, reused for pull requests that have not changed.
-      savedPullRequests: z.array(normalizedPullRequestSchema),
+      savedPullRequests: z.array(hostPullRequestSchema),
     }),
-    output: z.object({ pullRequests: z.array(normalizedPullRequestSchema) }),
+    output: z.object({ pullRequests: z.array(hostPullRequestSchema) }),
   },
   preparePullRequestBranch: {
     input: z.object({ projectPath: z.string().min(1), repository: repositoryNameSchema, number: z.number().int().positive() }),
