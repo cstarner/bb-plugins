@@ -7,7 +7,11 @@ const hostPr = (repository: string, number: number, overrides: Partial<HostPullR
   id: `id-${number}`, repository, number, title: `PR ${number}`, url: `https://github.com/${repository}/pull/${number}`,
   status: "OPEN", summary: "No review requested yet", isDraft: false, headRefName: `branch-${number}`,
   baseRefName: "main", createdAt: "2026-09-01T00:00:00Z", updatedAt: "2026-09-01T00:00:00Z", mergedAt: null,
-  changeMarker: "2026-09-01T00:00:00Z", ...overrides,
+  changeMarker: "2026-09-01T00:00:00Z", unaddressedFeedback: null, ...overrides,
+});
+const withFeedback = (number: number, latestAt: string) => hostPr("acme/web", number, {
+  status: "FEEDBACK", summary: "Feedback from octocat needs a response",
+  unaddressedFeedback: { latestAt, statusWhenMuted: "WAITING", summaryWhenMuted: "Muted feedback from octocat · Waiting for hubot" },
 });
 const project = (id: string, name: string, gitRemoteUrl: string | null) => ({
   id, name, gitRemoteUrl, sources: [{ hostId: "host-1", path: `/work/${name}`, isDefault: true }],
@@ -35,7 +39,7 @@ async function loadPlugin(pullRequests: HostPullRequest[]) {
     },
   });
   await plugin(bb);
-  const call = async (method: "prs_list" | "prs_refresh" | "prs_set_view", input: unknown) =>
+  const call = async (method: "prs_list" | "prs_refresh" | "prs_set_view" | "prs_set_feedback_muted", input: unknown) =>
     rpcContract[method].output.parse(await harness.callRpc(method, input));
   return { world, harness, listCalls, call };
 }
@@ -142,5 +146,56 @@ describe("per-project pull request lists", () => {
     expect(rpcContract.prs_list.output.parse(JSON.parse(refreshed.stdout)).list?.prs.map((pr) => pr.number)).toEqual([1]);
     expect((await call("prs_list", null)).selectedRepository).toBe("Acme/Api");
     expect((await harness.runCli(["refresh", "--repo"])).exitCode).toBe(1);
+  });
+});
+
+describe("muting feedback", () => {
+  const shown = (state: Awaited<ReturnType<Awaited<ReturnType<typeof loadPlugin>>["call"]>>) =>
+    state.list?.prs.map((pr) => [pr.number, pr.status, pr.summary, pr.feedbackMuted]);
+
+  it("shows a muted pull request as waiting, in the panel and the CLI, until it is unmuted", async () => {
+    const { harness, call } = await loadPlugin([withFeedback(1, "2026-09-01T10:00:00Z"), withFeedback(2, "2026-09-01T10:00:00Z")]);
+    await call("prs_refresh", { repository: "acme/web" });
+    const muted = await call("prs_set_feedback_muted", { repository: "acme/web", number: 1, muted: true });
+    expect(shown(muted)).toEqual([
+      [1, "WAITING", "Muted feedback from octocat · Waiting for hubot", true],
+      [2, "FEEDBACK", "Feedback from octocat needs a response", false],
+    ]);
+    expect(shown(await call("prs_refresh", { repository: "acme/web" }))).toEqual(shown(muted));
+    expect((await harness.runCli(["list", "--repo", "acme/web"])).stdout).toContain("WAITING       acme/web#1");
+    const unmuted = await call("prs_set_feedback_muted", { repository: "acme/web", number: 1, muted: false });
+    expect(shown(unmuted)?.[0]).toEqual([1, "FEEDBACK", "Feedback from octocat needs a response", false]);
+  });
+
+  it("shows the feedback again once there is more of it", async () => {
+    const { world, call } = await loadPlugin([withFeedback(1, "2026-09-01T10:00:00Z")]);
+    await call("prs_refresh", { repository: "acme/web" });
+    await call("prs_set_feedback_muted", { repository: "acme/web", number: 1, muted: true });
+    world.pullRequests = [withFeedback(1, "2026-09-02T09:00:00Z")];
+    expect(shown(await call("prs_refresh", { repository: "acme/web" }))).toEqual([[1, "FEEDBACK", "Feedback from octocat needs a response", false]]);
+  });
+
+  it("stays muted while the feedback is answered and comes back unchanged", async () => {
+    const { world, call } = await loadPlugin([withFeedback(1, "2026-09-01T10:00:00Z")]);
+    await call("prs_refresh", { repository: "acme/web" });
+    await call("prs_set_feedback_muted", { repository: "acme/web", number: 1, muted: true });
+    world.pullRequests = [hostPr("acme/web", 1, { status: "FAILING", summary: "1 check is failing" })];
+    expect(shown(await call("prs_refresh", { repository: "acme/web" }))).toEqual([[1, "FAILING", "1 check is failing", false]]);
+    world.pullRequests = [withFeedback(1, "2026-09-01T10:00:00Z")];
+    expect(shown(await call("prs_refresh", { repository: "acme/web" }))?.[0]?.[1]).toBe("WAITING");
+  });
+
+  it("hands the host the status GitHub's data gives, not the muted one", async () => {
+    const { call, listCalls } = await loadPlugin([withFeedback(1, "2026-09-01T10:00:00Z")]);
+    await call("prs_refresh", { repository: "acme/web" });
+    await call("prs_set_feedback_muted", { repository: "acme/web", number: 1, muted: true });
+    await call("prs_refresh", { repository: "acme/web" });
+    expect(hostContract.listPullRequests.input.parse(listCalls[1]).savedPullRequests).toEqual([withFeedback(1, "2026-09-01T10:00:00Z")]);
+  });
+
+  it("refuses to mute a pull request with no feedback", async () => {
+    const { call } = await loadPlugin([hostPr("acme/web", 1)]);
+    await call("prs_refresh", { repository: "acme/web" });
+    await expect(call("prs_set_feedback_muted", { repository: "acme/web", number: 1, muted: true })).rejects.toThrow("acme/web#1 has no feedback to mute");
   });
 });

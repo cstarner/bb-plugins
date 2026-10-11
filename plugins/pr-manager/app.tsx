@@ -5,6 +5,7 @@ import { PULL_REQUEST_STATUSES } from "./pr-status";
 import { AUTO_REFRESH_INTERVAL_SECONDS, SORT_ORDERS, SORT_ORDER_LABELS, searchPullRequests, sortPullRequests, type SortOrder } from "./pr-list";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 
@@ -29,7 +30,7 @@ function StatusBadge({ status, count }: { status: PullRequest["status"]; count?:
     </span>
   );
 }
-function PullRequestRow({ pr, onChanged }: { pr: PullRequest; onChanged: () => void }) {
+function PullRequestRow({ pr, onChanged, onFeedbackMuted }: { pr: PullRequest; onChanged: () => void; onFeedbackMuted: (result: SavedState) => void }) {
   const rpc = useRpc<typeof rpcContract>();
   const navigate = useBbNavigate();
   const [creating, setCreating] = useState(false);
@@ -37,6 +38,15 @@ function PullRequestRow({ pr, onChanged }: { pr: PullRequest; onChanged: () => v
   const [askingInstructions, setAskingInstructions] = useState(false);
   const [instructions, setInstructions] = useState("");
   const instructionsId = useId();
+  const [muting, setMuting] = useState(false);
+  const setFeedbackMuted = async (muted: boolean) => {
+    setMuting(true); setError(null);
+    try {
+      onFeedbackMuted(await rpc.call("prs_set_feedback_muted", { repository: pr.repository, number: pr.number, muted }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally { setMuting(false); }
+  };
   const createThread = async () => {
     if (pr.projectId === null || creating || instructions.trim() === "") return;
     setCreating(true); setError(null);
@@ -106,6 +116,21 @@ function PullRequestRow({ pr, onChanged }: { pr: PullRequest; onChanged: () => v
           <Button size="sm" variant="outline" onClick={() => navigate.openUrl(pr.url)} aria-label={`Open ${pr.repository} pull request ${pr.number} on GitHub`}>
             <Icon name="ExternalLink" className="size-4" />GitHub
           </Button>
+          {pr.status === "FEEDBACK" || pr.feedbackMuted ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="sm" variant="ghost" className="px-1.5" disabled={muting} aria-label={`More actions for pull request ${pr.number}`}>
+                  <Icon name="MoreHorizontal" className="size-4 rotate-90" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onSelect={() => void setFeedbackMuted(!pr.feedbackMuted)}>
+                  <Icon name={pr.feedbackMuted ? "Eye" : "EyeOff"} className="size-4" />
+                  {pr.feedbackMuted ? "Unmute feedback" : "Mute feedback until there is more"}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
         </div>
       </div>
       <h2 className="mt-1.5 text-sm font-medium leading-5 text-foreground">{pr.title}</h2>
@@ -305,7 +330,7 @@ function PrManagerPage() {
           : list === null ? <div className="rounded-lg border border-dashed border-border px-4 py-10 text-center text-sm text-muted-foreground">No saved pull request list for {selectedRepository} yet. Click Refresh to load it.</div>
           : prs.length === 0 ? <div className="rounded-lg border border-dashed border-border px-4 py-10 text-center text-sm text-muted-foreground">No open or recently merged pull requests in {selectedRepository}.</div>
           : filteredPrs.length === 0 ? <div className="rounded-lg border border-dashed border-border px-4 py-10 text-center text-sm text-muted-foreground">No pull requests match these filters.</div>
-          : filteredPrs.map((pr) => <PullRequestRow key={pr.key} pr={pr} onChanged={() => void loadCached()} />)}
+          : filteredPrs.map((pr) => <PullRequestRow key={pr.key} pr={pr} onChanged={() => void loadCached()} onFeedbackMuted={applyResult} />)}
         </div>
       </div>
     </div>

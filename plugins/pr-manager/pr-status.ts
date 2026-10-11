@@ -73,23 +73,31 @@ function isApproved(input: PullRequestStatusInput): boolean {
 //     pending re-request is the only signal that it was handled);
 //   - a plain PR comment with no review attached, unless the author has commented since.
 // Bots and the author's own activity never count as feedback.
-export function unaddressedFeedbackFrom(input: PullRequestStatusInput): string[] {
+function unaddressedFeedback(input: PullRequestStatusInput): Array<{ author: string; at: string }> {
   const reRequested = new Set(input.requestedReviewers.map((reviewer) => reviewer.toLowerCase()));
   const ownComments = input.comments.filter((comment) => sameUser(comment.author, input.author));
   const latestOwnComment = ownComments.reduce((latest, comment) => comment.createdAt > latest ? comment.createdAt : latest, "");
-  const reviewers = new Set<string>();
+  const feedback: Array<{ author: string; at: string }> = [];
   for (const review of input.reviews) {
     if (review.isBot || sameUser(review.author, input.author)) continue;
     if (!FEEDBACK_REVIEW_STATES.has(review.state.toUpperCase())) continue;
     if (reRequested.has(review.author.toLowerCase())) continue;
-    reviewers.add(review.author);
+    feedback.push({ author: review.author, at: review.submittedAt });
   }
   for (const comment of input.comments) {
     if (comment.isBot || sameUser(comment.author, input.author)) continue;
     if (comment.createdAt <= latestOwnComment) continue;
-    reviewers.add(comment.author);
+    feedback.push({ author: comment.author, at: comment.createdAt });
   }
-  return [...reviewers];
+  return feedback;
+}
+export function unaddressedFeedbackFrom(input: PullRequestStatusInput): string[] {
+  return [...new Set(unaddressedFeedback(input).map((feedback) => feedback.author))];
+}
+// When the newest unaddressed feedback arrived, or null when there is none. Muting
+// remembers this, so feedback that arrives later is recognised as new.
+export function latestUnaddressedFeedbackAt(input: PullRequestStatusInput): string | null {
+  return unaddressedFeedback(input).reduce<string | null>((latest, { at }) => latest === null || at > latest ? at : latest, null);
 }
 
 export function classifyPullRequest(input: PullRequestStatusInput): PullRequestStatus {
@@ -100,8 +108,17 @@ export function classifyPullRequest(input: PullRequestStatusInput): PullRequestS
   if (input.isDraft) return "DRAFT";
   if (input.checks.some((check) => FAILING_CONCLUSIONS.has(check.conclusion))) return "FAILING";
   if (unaddressedFeedbackFrom(input).length > 0) return "FEEDBACK";
-  if (isApproved(input)) return input.requestedReviewers.length === 0 ? "APPROVED" : "PART_APPROVED";
-  return input.requestedReviewers.length > 0 ? "WAITING" : "OPEN";
+  return approvalStatus(input) ?? (input.requestedReviewers.length > 0 ? "WAITING" : "OPEN");
+}
+function approvalStatus(input: PullRequestStatusInput): "APPROVED" | "PART_APPROVED" | null {
+  if (!isApproved(input)) return null;
+  return input.requestedReviewers.length === 0 ? "APPROVED" : "PART_APPROVED";
+}
+// What a FEEDBACK pull request shows while its feedback is muted: an approval if it has
+// one, and otherwise WAITING even with no reviewer requested, because muting says the
+// next move is someone else's.
+export function classifyWithFeedbackMuted(input: PullRequestStatusInput): PullRequestStatus {
+  return approvalStatus(input) ?? "WAITING";
 }
 
 // Named approvers where we have them, and a bare "Approved" where the approval came from
@@ -125,4 +142,11 @@ export function summarizePullRequest(input: PullRequestStatusInput, status: Pull
     case "OPEN": return `No review requested yet${running}`;
     case "WAITING": return `Waiting for ${input.requestedReviewers.join(", ")}${running}`;
   }
+}
+
+export function summarizeWithFeedbackMuted(input: PullRequestStatusInput, status: PullRequestStatus): string {
+  const muted = `Muted feedback from ${unaddressedFeedbackFrom(input).join(", ")}`;
+  // With nobody requested there is no reviewer for the usual WAITING summary to name.
+  if (status === "WAITING" && input.requestedReviewers.length === 0) return `${muted} · waiting for more`;
+  return `${muted} · ${summarizePullRequest(input, status)}`;
 }

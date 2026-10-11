@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { expect, describe, it } from "vitest";
 import type { PullRequest, SavedState } from "./server";
@@ -14,7 +14,7 @@ const PR: PullRequest = {
   key: "acme/app#7", id: "PR_7", repository: "acme/app", number: 7, title: "Add a thing", url: "https://github.com/acme/app/pull/7",
   status: "FAILING", summary: "1 check failing", isDraft: false, headRefName: "feature", baseRefName: "main",
   createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-02T00:00:00Z", mergedAt: null, changeMarker: "m1",
-  projectId: "prj_1", projectName: "App", threadId: null, threadTitle: null, threadArchived: false,
+  projectId: "prj_1", projectName: "App", threadId: null, threadTitle: null, threadArchived: false, feedbackMuted: false,
 };
 
 function savedState(pr: PullRequest): SavedState {
@@ -57,6 +57,44 @@ describe("creating a thread for a pull request", () => {
     await waitFor(() => {
       expect(slot.inspection.navigateCalls).toContainEqual(expect.objectContaining({ threadId: "thr_new" }));
     });
+    slot.lifecycle.unmount();
+  });
+});
+
+describe("muting feedback", () => {
+  it("mutes from the row's menu, and offers to unmute once it is muted", async () => {
+    const app = await load();
+    const withFeedback: PullRequest = { ...PR, status: "FEEDBACK", summary: "Feedback from octocat needs a response" };
+    const slot = renderSlot(app.navPanels[0]!, { subPath: "" }, {
+      rpc: {
+        prs_list: () => savedState(withFeedback),
+        prs_refresh: () => savedState(withFeedback),
+        prs_set_feedback_muted: () => savedState({ ...withFeedback, status: "WAITING", summary: "Muted feedback from octocat · waiting for more", feedbackMuted: true }),
+      },
+    });
+
+    const openMenu = async () => {
+      const menuButton = await slot.findByLabelText("More actions for pull request 7");
+      fireEvent.keyDown(menuButton, { key: "Enter" });
+    };
+    await openMenu();
+    // The menu is rendered outside the panel, so it is looked for on the whole screen.
+    fireEvent.click(await screen.findByText("Mute feedback until there is more"));
+
+    await slot.findByText("Muted feedback from octocat · waiting for more");
+    expect(slot.inspection.rpcCalls.find((entry) => entry.method === "prs_set_feedback_muted")?.input)
+      .toEqual({ repository: "acme/app", number: 7, muted: true });
+    // A muted pull request is no longer FEEDBACK, and still has to offer the way back.
+    await openMenu();
+    await screen.findByText("Unmute feedback");
+    slot.lifecycle.unmount();
+  });
+
+  it("offers no menu on a pull request with no feedback", async () => {
+    const app = await load();
+    const slot = renderSlot(app.navPanels[0]!, { subPath: "" }, { rpc: { prs_list: () => savedState(PR), prs_refresh: () => savedState(PR) } });
+    await slot.findByText("Add a thing");
+    expect(slot.queryByLabelText("More actions for pull request 7")).toBeNull();
     slot.lifecycle.unmount();
   });
 });
