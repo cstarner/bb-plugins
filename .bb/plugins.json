@@ -8,6 +8,7 @@
     { "name": "pr-manager", "source": "./plugins/pr-manager" },
     { "name": "branch-pr", "source": "./plugins/branch-pr" },
     { "name": "tab-manager", "source": "./plugins/tab-manager" },
-    { "name": "run-commands", "source": "./plugins/run-commands" }
+    { "name": "run-commands", "source": "./plugins/run-commands" },
+    { "name": "saved-prompts", "source": "./plugins/saved-prompts" }
   ]
 }
