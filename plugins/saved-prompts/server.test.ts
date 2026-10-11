@@ -1,22 +1,22 @@
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { describe, expect, it, vi } from "vitest";
-import { MESSAGES_CHANGED } from "./channels.js";
-import type { Message } from "./messages.js";
+import { PROMPTS_CHANGED } from "./channels.js";
+import type { Prompt } from "./prompts.js";
 import plugin from "./server.js";
 
 const THREAD = "thr_1";
 const PROJECT = "proj_1";
 
-const sync: Message = {
+const sync: Prompt = {
   id: "sync",
   name: "Sync with main",
   text: "Pull in the latest from main and fix any merge conflicts.",
 };
 
-async function createHost(messages: Message[] = [sync]) {
+async function createHost(prompts: Prompt[] = [sync]) {
   const send = vi.fn(async (_args: unknown) => ({ ok: true, delivery: "sent" }));
   const { bb, harness } = createFakePluginHost({
-    pluginId: "send-messages",
+    pluginId: "saved-prompts",
     sdk: {
       threads: { get: vi.fn(async () => ({ projectId: PROJECT })), send },
       projects: {
@@ -28,15 +28,15 @@ async function createHost(messages: Message[] = [sync]) {
     },
   });
   plugin(bb);
-  await harness.behavior.callRpc("messages_save", { projectId: PROJECT, messages });
+  await harness.behavior.callRpc("prompts_save", { projectId: PROJECT, prompts });
   return { harness, send };
 }
 
-describe("sending a message", () => {
-  it("sends the saved text to the thread, as a message the agent takes when it can", async () => {
+describe("sending a prompt", () => {
+  it("sends the saved text to the thread, as a prompt the agent takes when it can", async () => {
     const { harness, send } = await createHost();
     await expect(
-      harness.behavior.callRpc("send", { threadId: THREAD, messageId: "sync" }),
+      harness.behavior.callRpc("send", { threadId: THREAD, promptId: "sync" }),
     ).resolves.toEqual({ delivery: "sent" });
     expect(send).toHaveBeenCalledWith({
       threadId: THREAD,
@@ -45,39 +45,39 @@ describe("sending a message", () => {
     });
   });
 
-  it("says so when the agent was busy and the message is waiting", async () => {
+  it("says so when the agent was busy and the prompt is waiting", async () => {
     const { harness, send } = await createHost();
     send.mockResolvedValueOnce({ ok: true, delivery: "queued" });
     await expect(
-      harness.behavior.callRpc("send", { threadId: THREAD, messageId: "sync" }),
+      harness.behavior.callRpc("send", { threadId: THREAD, promptId: "sync" }),
     ).resolves.toEqual({ delivery: "queued" });
   });
 
-  it("refuses a message that has since been removed, and sends nothing", async () => {
+  it("refuses a prompt that has since been removed, and sends nothing", async () => {
     const { harness, send } = await createHost();
     await expect(
-      harness.behavior.callRpc("send", { threadId: THREAD, messageId: "gone" }),
-    ).rejects.toThrow("That message is no longer in the list.");
+      harness.behavior.callRpc("send", { threadId: THREAD, promptId: "gone" }),
+    ).rejects.toThrow("That prompt is no longer in the list.");
     expect(send).not.toHaveBeenCalled();
   });
 });
 
-describe("the list of messages", () => {
+describe("the list of prompts", () => {
   it("is saved for its project, and tells that project's open headers to refetch", async () => {
     const { harness } = await createHost();
-    await expect(harness.behavior.callRpc("messages_get", { projectId: PROJECT })).resolves.toEqual({
-      messages: [sync],
+    await expect(harness.behavior.callRpc("prompts_get", { projectId: PROJECT })).resolves.toEqual({
+      prompts: [sync],
     });
     expect(harness.realtimeSignals).toContainEqual({
-      channel: MESSAGES_CHANGED,
+      channel: PROMPTS_CHANGED,
       payload: { projectId: PROJECT },
     });
   });
 
   it("belongs to one project: another project starts with none", async () => {
     const { harness } = await createHost();
-    await expect(harness.behavior.callRpc("messages_get", { projectId: "proj_2" })).resolves.toEqual({
-      messages: [],
+    await expect(harness.behavior.callRpc("prompts_get", { projectId: "proj_2" })).resolves.toEqual({
+      prompts: [],
     });
   });
 

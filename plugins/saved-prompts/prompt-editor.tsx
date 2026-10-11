@@ -1,4 +1,4 @@
-// The form for one project's list of saved messages. Shown in two places —
+// The form for one project's list of saved prompts. Shown in two places —
 // the dialog the header dropdown opens, and the plugin's page in Settings — so
 // it owns its own loading and saving rather than being handed a list.
 import { useCallback, useEffect, useState } from "react";
@@ -8,29 +8,29 @@ import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { messageOf } from "./errors";
-import { messagesSchema, type Message } from "./messages";
+import { promptsSchema, type Prompt } from "./prompts";
 import type { rpcContract } from "./server";
 
-function blankMessage(): Message {
+function blankPrompt(): Prompt {
   return { id: crypto.randomUUID(), name: "", text: "" };
 }
 
-function MessageFields({
-  message,
+function PromptFields({
+  prompt,
   onChange,
   onRemove,
 }: {
-  message: Message;
-  onChange: (next: Message) => void;
+  prompt: Prompt;
+  onChange: (next: Prompt) => void;
   onRemove: () => void;
 }) {
-  const label = message.name.trim() === "" ? "new message" : `"${message.name}"`;
+  const label = prompt.name.trim() === "" ? "new prompt" : `"${prompt.name}"`;
   return (
     <li className="flex flex-col gap-2 py-3">
       <div className="flex items-center gap-2">
         <Input
-          value={message.name}
-          onChange={(event) => onChange({ ...message, name: event.target.value })}
+          value={prompt.name}
+          onChange={(event) => onChange({ ...prompt, name: event.target.value })}
           placeholder="Name, e.g. Sync with main"
           aria-label={`Name of ${label}`}
         />
@@ -45,10 +45,10 @@ function MessageFields({
         </Button>
       </div>
       <Textarea
-        value={message.text}
-        onChange={(event) => onChange({ ...message, text: event.target.value })}
-        placeholder="Message, e.g. Pull in the latest from main and fix any merge conflicts."
-        aria-label={`Message for ${label}`}
+        value={prompt.text}
+        onChange={(event) => onChange({ ...prompt, text: event.target.value })}
+        placeholder="Prompt, e.g. Pull in the latest from main and fix any merge conflicts."
+        aria-label={`Prompt for ${label}`}
         rows={3}
       />
     </li>
@@ -56,33 +56,33 @@ function MessageFields({
 }
 
 /**
- * Edits one project's messages. `onSaved` lets the dialog close itself; the
+ * Edits one project's prompts. `onSaved` lets the dialog close itself; the
  * Settings page leaves it out.
  */
-export function MessageEditor({ projectId, onSaved }: { projectId: string; onSaved?: () => void }) {
+export function PromptEditor({ projectId, onSaved }: { projectId: string; onSaved?: () => void }) {
   const rpc = useRpc<typeof rpcContract>();
-  const [draft, setDraft] = useState<Message[] | null>(null);
+  const [draft, setDraft] = useState<Prompt[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(() => {
-    rpc.call("messages_get", { projectId }).then(
-      (result) => setDraft(result.messages),
+    rpc.call("prompts_get", { projectId }).then(
+      (result) => setDraft(result.prompts),
       (cause) => setError(messageOf(cause)),
     );
   }, [rpc, projectId]);
   useEffect(load, [load]);
 
   const save = async () => {
-    const parsed = messagesSchema.safeParse(draft);
+    const parsed = promptsSchema.safeParse(draft);
     if (!parsed.success) {
-      setError(parsed.error.issues[0]?.message ?? "These messages are not valid.");
+      setError(parsed.error.issues[0]?.message ?? "These prompts are not valid.");
       return;
     }
     setSaving(true);
     try {
-      const saved = await rpc.call("messages_save", { projectId, messages: parsed.data });
-      setDraft(saved.messages);
+      const saved = await rpc.call("prompts_save", { projectId, prompts: parsed.data });
+      setDraft(saved.prompts);
       setError(null);
       onSaved?.();
     } catch (cause) {
@@ -95,7 +95,7 @@ export function MessageEditor({ projectId, onSaved }: { projectId: string; onSav
   if (draft === null) {
     return (
       <p role={error === null ? "status" : "alert"} className="text-sm text-muted-foreground">
-        {error ?? "Loading messages…"}
+        {error ?? "Loading prompts…"}
       </p>
     );
   }
@@ -103,18 +103,18 @@ export function MessageEditor({ projectId, onSaved }: { projectId: string; onSav
     <div className="flex flex-col gap-3">
       {draft.length === 0 ? (
         <p className="text-sm text-muted-foreground">
-          No messages yet. Add one, such as an instruction you find yourself typing in every thread.
+          No prompts yet. Add one, such as an instruction you find yourself typing in every thread.
         </p>
       ) : (
         <ul className="divide-y divide-border">
-          {draft.map((message) => (
-            <MessageFields
-              key={message.id}
-              message={message}
+          {draft.map((prompt) => (
+            <PromptFields
+              key={prompt.id}
+              prompt={prompt}
               onChange={(next) =>
-                setDraft(draft.map((entry) => (entry.id === message.id ? next : entry)))
+                setDraft(draft.map((entry) => (entry.id === prompt.id ? next : entry)))
               }
-              onRemove={() => setDraft(draft.filter((entry) => entry.id !== message.id))}
+              onRemove={() => setDraft(draft.filter((entry) => entry.id !== prompt.id))}
             />
           ))}
         </ul>
@@ -125,9 +125,9 @@ export function MessageEditor({ projectId, onSaved }: { projectId: string; onSav
         </p>
       )}
       <div className="flex items-center justify-between gap-2">
-        <Button variant="outline" size="sm" onClick={() => setDraft([...draft, blankMessage()])}>
+        <Button variant="outline" size="sm" onClick={() => setDraft([...draft, blankPrompt()])}>
           <Icon name="Plus" className="size-4" />
-          Add message
+          Add prompt
         </Button>
         <Button size="sm" disabled={saving} onClick={save}>
           Save
@@ -141,7 +141,7 @@ export function MessageEditor({ projectId, onSaved }: { projectId: string; onSav
  * The Settings page's editor. BB does not tell a settings section which
  * project is in view, so this one asks: pick a project, then edit its list.
  */
-export function ProjectMessageEditor() {
+export function ProjectPromptEditor() {
   const rpc = useRpc<typeof rpcContract>();
   const [projects, setProjects] = useState<{ id: string; name: string }[] | null>(null);
   const [projectId, setProjectId] = useState<string | null>(null);
@@ -165,7 +165,7 @@ export function ProjectMessageEditor() {
     );
   }
   if (projectId === null) {
-    return <p className="text-sm text-muted-foreground">Add a project to give it messages.</p>;
+    return <p className="text-sm text-muted-foreground">Add a project to give it prompts.</p>;
   }
   return (
     <div className="flex flex-col gap-3">
@@ -184,7 +184,7 @@ export function ProjectMessageEditor() {
         </select>
       </label>
       {/* Keyed so switching project discards the other project's unsaved draft. */}
-      <MessageEditor key={projectId} projectId={projectId} />
+      <PromptEditor key={projectId} projectId={projectId} />
     </div>
   );
 }

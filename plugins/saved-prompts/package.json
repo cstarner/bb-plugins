@@ -1,5 +1,5 @@
 {
-  "name": "bb-plugin-send-messages",
+  "name": "bb-plugin-saved-prompts",
   "version": "0.1.0",
   "type": "module",
   "engines": {
@@ -7,8 +7,8 @@
     "bbPluginSdk": ">=0.5.29"
   },
   "bb": {
-    "name": "Send Messages",
-    "description": "Send a saved message, such as \"pull in the latest from main\", to a thread's agent from the thread header.",
+    "name": "Saved Prompts",
+    "description": "Save the prompts you type again and again, such as \"pull in the latest from main and fix any merge conflicts\", and send one to a thread's agent with a click from the thread header.",
     "branding": {
       "icon": "Send"
     },

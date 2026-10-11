@@ -11,12 +11,12 @@ Personal plugins for the [BB](https://getbb.app) IDE. Each plugin lives under
 | [branch-pr](plugins/branch-pr) | Open the GitHub pull request for the current thread's branch as a tab in the side panel, from the thread header, the command palette, or the panel's Actions list. |
 | [tab-manager](plugins/tab-manager) | Edit the tabs in a thread's right-hand panel: close one, close everything below it, close them all, or reorder them. |
 | [run-commands](plugins/run-commands) | Run a saved command, such as a dev server, from the thread header, and follow its output in a side-panel tab. |
-| [send-messages](plugins/send-messages) | Send a saved message, such as "pull in the latest from main", to a thread's agent from the thread header. |
+| [saved-prompts](plugins/saved-prompts) | Save the prompts you type again and again, such as "pull in the latest from main and fix any merge conflicts", and send one to a thread's agent with a click from the thread header. |
 
 `code-review`, `pr-manager` and `branch-pr` need a connected BB machine with
 the GitHub CLI installed and authenticated (`gh auth login`); `file-browser`
 needs only `git` on the machine holding the workspace, and `tab-manager`,
-`run-commands` and `send-messages` need neither.
+`run-commands` and `saved-prompts` need neither.
 
 ## Installing
 
@@ -29,7 +29,7 @@ bb plugin install git:https://github.com/robennals/bb-plugins.git@main --plugin 
 bb plugin install git:https://github.com/robennals/bb-plugins.git@main --plugin branch-pr
 bb plugin install git:https://github.com/robennals/bb-plugins.git@main --plugin tab-manager
 bb plugin install git:https://github.com/robennals/bb-plugins.git@main --plugin run-commands
-bb plugin install git:https://github.com/robennals/bb-plugins.git@main --plugin send-messages
+bb plugin install git:https://github.com/robennals/bb-plugins.git@main --plugin saved-prompts
 ```
 
 `--plugin <name>` resolves against `.bb/plugins.json`; `--subdirectory
