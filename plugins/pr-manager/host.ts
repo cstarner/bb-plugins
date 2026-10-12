@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
 import { hostContract } from "./contract.js";
-import { preparePullRequestBase } from "./git-ref.js";
+import { preparePullRequestBase, renameToPullRequestBranch } from "./git-ref.js";
 import { fetchPullRequests } from "./pr-search.js";
 import { sortPullRequests } from "./pr-list.js";
 
@@ -41,10 +41,8 @@ export default experimental_defineHostEntry({
       if (normalizeRemote(await git("remote", "get-url", "origin")) !== repository.toLowerCase()) throw new Error(`Project origin does not match ${repository}.`);
       return preparePullRequestBase(number, headRefName, git);
     },
-    // Fails, leaving the branch as BB named it, when the pull request's branch is already a
-    // local branch, as it is while the thread that opened the pull request still has it.
     async renameBranchToPullRequestHead({ worktreePath, createdBranch, headRefName }, context) {
-      await run("git", ["-C", worktreePath, "branch", "-m", createdBranch, headRefName], context.signal);
+      await renameToPullRequestBranch(createdBranch, headRefName, (...args) => run("git", ["-C", worktreePath, ...args], context.signal));
       return null;
     },
   },

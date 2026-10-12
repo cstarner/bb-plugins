@@ -20,3 +20,16 @@ export async function preparePullRequestBase(
   // BB fetches origin's branch itself before creating the worktree.
   return { ref: tracksHeadBranch ? `origin/${headRefName}` : ref, tracksHeadBranch };
 }
+// Gives the branch BB created for a thread the pull request's branch name. That name may be
+// taken by a local branch an earlier thread left behind. One holding nothing the new branch
+// lacks is replaced; git refuses when it is checked out in another worktree.
+export async function renameToPullRequestBranch(
+  createdBranch: string, headRefName: string, git: (...args: string[]) => Promise<string>,
+): Promise<void> {
+  if ((await git("branch", "--list", headRefName)).trim() !== "") {
+    await git("merge-base", "--is-ancestor", `refs/heads/${headRefName}`, `refs/heads/${createdBranch}`);
+    // Deleted, not overwritten, so that its upstream goes with it.
+    await git("branch", "-D", headRefName);
+  }
+  await git("branch", "-m", createdBranch, headRefName);
+}

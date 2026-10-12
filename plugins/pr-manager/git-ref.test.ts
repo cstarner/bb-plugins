@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
-import { preparePullRequestBase, pullRequestSourceRef } from "./git-ref.js";
+import { preparePullRequestBase, pullRequestSourceRef, renameToPullRequestBranch } from "./git-ref.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -48,8 +48,29 @@ describe("preparePullRequestBase", () => {
     expect((await inWorktree("rev-parse", "--abbrev-ref", "@{upstream}")).trim()).toBe("origin/feature");
     await inWorktree("pull", "--quiet");
     await expect(inWorktree("push", "--dry-run")).rejects.toThrow("does not match");
-    await inWorktree("branch", "-m", "bb/pr-1-thread", "feature");
+    await renameToPullRequestBranch("bb/pr-1-thread", "feature", inWorktree);
     await inWorktree("push", "--dry-run");
+  });
+
+  it("takes the name from a branch an earlier thread left, unless that branch is in use or has work of its own", async () => {
+    const { root, project } = await projectWithPullRequest();
+    const addWorktree = async (branch: string, from: string) => {
+      const worktree = join(root, branch.replaceAll("/", "-"));
+      await project("worktree", "add", "--quiet", "-B", branch, worktree, from);
+      return (...args: string[]) => project("-C", worktree, ...args);
+    };
+    await project("branch", "--quiet", "feature", "origin/main");
+    const second = await addWorktree("bb/pr-1-second", "origin/feature");
+    await renameToPullRequestBranch("bb/pr-1-second", "feature", second);
+    expect((await second("rev-parse", "--abbrev-ref", "HEAD", "@{upstream}")).split("\n").slice(0, 2)).toEqual(["feature", "origin/feature"]);
+
+    const third = await addWorktree("bb/pr-1-third", "origin/feature");
+    await expect(renameToPullRequestBranch("bb/pr-1-third", "feature", third)).rejects.toThrow();
+    const stale = await addWorktree("bb/pr-1-stale", "origin/main");
+    await second("-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "--quiet", "--allow-empty", "-m", "unpushed");
+    await second("checkout", "--quiet", "--detach");
+    await expect(renameToPullRequestBranch("bb/pr-1-stale", "feature", stale)).rejects.toThrow();
+    expect((await third("rev-parse", "--abbrev-ref", "HEAD")).trim()).toBe("bb/pr-1-third");
   });
 
   it("falls back to the private ref when origin's branch is gone or is not the head", async () => {
