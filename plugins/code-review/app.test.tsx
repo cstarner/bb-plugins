@@ -151,6 +151,8 @@ function rpc(overrides: Record<string, unknown> = {}) {
     getReviewForThread: () => ({ repo: "acme/app", number: 7 }),
     getPanelState: () => ({ repo: null, filter: null, sidePane: null, diffFile: null, diffUrl: null }),
     setPanelState: () => ({ repo: null, filter: null, sidePane: null, diffFile: null, diffUrl: null }),
+    getReviewModel: () => null,
+    setReviewModel: (model: unknown) => model,
     ...overrides,
   };
 }
@@ -1306,6 +1308,57 @@ describe("starting and opening a review from the home screen", () => {
     await slot.findByText("Add a thing");
     // No route to the issue list any more: a stale deep link lands at home.
     expect(slot.queryByText("Off by one")).toBeNull();
+    slot.lifecycle.unmount();
+  });
+});
+
+describe("choosing the review model", () => {
+  const OPUS = { providerId: "claude-code", model: "claude-opus-5-5", reasoningLevel: "high" };
+
+  it("shows the model reviews run with, beside the PR list", async () => {
+    const app = await load();
+    const slot = renderSlot(
+      app.navPanels[0]!,
+      { subPath: "" },
+      { rpc: rpc({ getReviewModel: () => OPUS }) },
+    );
+    expect(await slot.findByLabelText("Model")).toHaveProperty("value", "claude-opus-5-5");
+    // The default shown is the one for the repo on screen.
+    await waitFor(() => {
+      const asked = slot.inspection.rpcCalls.filter((entry) => entry.method === "getReviewModel");
+      expect(asked.at(-1)?.input).toEqual({ repo: "acme/app" });
+    });
+    slot.lifecycle.unmount();
+  });
+
+  it("saves a new choice", async () => {
+    const app = await load();
+    const slot = renderSlot(
+      app.navPanels[0]!,
+      { subPath: "" },
+      { rpc: rpc({ getReviewModel: () => OPUS }) },
+    );
+    // The test picker drops an unapplied edit when its value is refetched, as
+    // it is once the saved repo arrives; wait for the list that follows it.
+    await slot.findByText("Add a thing");
+    await waitFor(() => {
+      const asked = slot.inspection.rpcCalls.filter((entry) => entry.method === "getReviewModel");
+      expect(asked.at(-1)?.input).toEqual({ repo: "acme/app" });
+    });
+    fireEvent.change(await slot.findByLabelText("Model"), { target: { value: "gpt-6-astra" } });
+    fireEvent.click(slot.getByText("Apply execution selection"));
+    await waitFor(() => {
+      const saved = slot.inspection.rpcCalls.find((entry) => entry.method === "setReviewModel");
+      expect(saved?.input).toEqual({ ...OPUS, model: "gpt-6-astra" });
+    });
+    slot.lifecycle.unmount();
+  });
+
+  it("stays out of the way when there is no model to show", async () => {
+    const app = await load();
+    const slot = renderSlot(app.navPanels[0]!, { subPath: "" }, { rpc: rpc() });
+    await slot.findByText("Add a thing");
+    expect(slot.queryByLabelText("Model")).toBeNull();
     slot.lifecycle.unmount();
   });
 });

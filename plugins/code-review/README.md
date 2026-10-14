@@ -134,6 +134,20 @@ Then, in **Settings → Plugins → Code Review**:
 Settings do not auto-reload: run `bb plugin reload code-review` after changing
 one.
 
+## Choosing the model
+
+A model picker sits beside **Refresh** on the pull request list, and beside
+**Re-run review** in a review's tab. It is BB's own picker, so it offers the
+same providers, models and reasoning levels as the composer.
+
+- **The choice sticks.** It is stored on the server and every review started
+  after it runs with it, until you pick another.
+- **Until you choose**, the picker shows the default of the BB project the repo
+  belongs to, and reviews are started without naming a model, which leaves BB to
+  apply that default.
+- **A running review is not affected.** The model is set when the review thread
+  is spawned; re-run the review to use a different one.
+
 ## Filters
 
 GitHub's own `review-requested:@me` quietly folds in requests made to teams you

@@ -267,6 +267,19 @@ const panelStateSchema = z.object({
   diffUrl: z.string().nullable(),
 });
 
+/**
+ * The provider, model and reasoning level a review thread runs with: the value
+ * BB's own model picker emits, and what `threads.spawn` takes.
+ */
+const reviewModelSchema = z.object({
+  providerId: z.string(),
+  model: z.string(),
+  reasoningLevel: z.enum(["none", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode"]),
+  /** Present only when the provider has service tiers. */
+  serviceTier: z.enum(["default", "fast"]).optional(),
+});
+export type ReviewModelDto = z.infer<typeof reviewModelSchema>;
+
 export const rpcContract = defineRpcContract({
   status: { input: z.null(), output: statusSchema },
   listPullRequests: {
@@ -355,6 +368,16 @@ export const rpcContract = defineRpcContract({
       locations: z.array(codeLocationSchema),
     }),
   },
+  /**
+   * The model the next review will run with: the one chosen in the panel, or
+   * until one is chosen, the default of the BB project `repo` belongs to. Null
+   * when neither is known.
+   */
+  getReviewModel: {
+    input: z.object({ repo: z.string().nullable() }),
+    output: reviewModelSchema.nullable(),
+  },
+  setReviewModel: { input: reviewModelSchema, output: reviewModelSchema },
   getPanelState: { input: z.null(), output: panelStateSchema },
   /**
    * A patch, not a replacement: the PR list owns the repo and filter while the
@@ -726,6 +749,12 @@ export default async function plugin(bb: BbPluginApi, deps: PluginDependencies =
     `ALTER TABLE findings DROP COLUMN problem`,
     `ALTER TABLE findings DROP COLUMN suggested_fix`,
     `ALTER TABLE findings DROP COLUMN discussion_thread_id`,
+    // The model reviews run with, chosen in the panel.
+    `CREATE TABLE IF NOT EXISTS review_model (
+       id INTEGER PRIMARY KEY CHECK (id = 1),
+       model TEXT NOT NULL,
+       updated_at TEXT NOT NULL
+     )`,
   ]);
 
   /**
@@ -1187,6 +1216,44 @@ interface ContextRow {
   }
 
   // -------------------------------------------------------------------------
+  // The model reviews run with
+  // -------------------------------------------------------------------------
+  function chosenReviewModel(): ReviewModelDto | null {
+    const row = db.prepare(`SELECT model FROM review_model WHERE id = 1`).get() as
+      | { model: string }
+      | undefined;
+    if (row === undefined) return null;
+    let stored: unknown = null;
+    try {
+      stored = JSON.parse(row.model);
+    } catch {
+      stored = null;
+    }
+    const parsed = reviewModelSchema.safeParse(stored);
+    return parsed.success ? parsed.data : null;
+  }
+
+  /**
+   * What a review of `repo` runs with while no model has been chosen: its BB
+   * project's default. Only for showing in the picker — an unchosen review is
+   * spawned without a model, so BB applies this default itself.
+   */
+  async function projectDefaultReviewModel(repo: string): Promise<ReviewModelDto | null> {
+    try {
+      const defaults = await bb.sdk.projects.defaultExecutionOptions({
+        projectId: await resolveProjectId(repo),
+      });
+      const parsed = reviewModelSchema.safeParse(defaults);
+      return parsed.success ? parsed.data : null;
+    } catch (error) {
+      // A repo with no project cannot be reviewed either, and startReview says
+      // so; the picker just has nothing to show until then.
+      bb.log.warn(`could not read the default model for ${repo}: ${String(error)}`);
+      return null;
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Starting a review
   // -------------------------------------------------------------------------
   async function startReview(
@@ -1265,6 +1332,8 @@ interface ContextRow {
         // first characters on what tells one review thread apart from the next.
         title: `Review #${number} - ${title}`.slice(0, 120),
         prompt,
+        // Nothing chosen leaves the model to the project's default.
+        ...(chosenReviewModel() ?? {}),
       });
       touchReview(reviewId, { thread_id: thread.id, status: "running" });
       bb.log.info(`started review thread ${thread.id} for ${reviewId}`);
@@ -2157,6 +2226,20 @@ interface ContextRow {
     async getFindingCode({ findingId, context }) {
       await checkAuth();
       return findingCode(findingId, context ?? 3);
+    },
+
+    async getReviewModel({ repo }) {
+      return chosenReviewModel() ?? (repo === null ? null : projectDefaultReviewModel(repo));
+    },
+
+    setReviewModel(model) {
+      db.prepare(
+        `INSERT INTO review_model (id, model, updated_at) VALUES (1, @model, @updated_at)
+         ON CONFLICT(id) DO UPDATE SET model = @model, updated_at = @updated_at`,
+      ).run({ model: JSON.stringify(model), updated_at: nowIso() });
+      // So a picker already on screen elsewhere follows this choice.
+      announcePanelState();
+      return model;
     },
 
     getPanelState() {
