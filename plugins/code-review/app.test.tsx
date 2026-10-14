@@ -1,8 +1,22 @@
 // @vitest-environment jsdom
 import { fireEvent, waitFor } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { FindingDto, PullRequestDto, ReviewDto } from "./server";
+
+/**
+ * BB rebuilds `useBbNavigate()`'s object whenever anything it closes over
+ * changes — the thread panel's opener, the route — so a slot re-renders with
+ * a new one every time the user switches tab. The harness hands out one stable
+ * object; a fresh copy per render keeps effects honest about that.
+ */
+vi.mock("@get-bb/plugin-sdk/app", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@get-bb/plugin-sdk/app")>();
+  return {
+    ...actual,
+    useBbNavigate: () => ({ ...actual.useBbNavigate() }),
+  };
+});
 
 /**
  * The thunk matters: app.tsx binds the plugin runtime at module load, so
@@ -1410,6 +1424,16 @@ describe("the review tab opening itself", () => {
 
     const first = header(app, "thr_1");
     await waitFor(() => expect(first.inspection.navigateCalls).toHaveLength(1));
+    // Re-renders, as a tab switch causes in BB, must not open it again and
+    // drag the user back from the tab they picked.
+    await first.behavior.emitRealtime("code-review-changed", {});
+    await first.behavior.emitRealtime("code-review-changed", {});
+    await waitFor(() => {
+      expect(
+        first.inspection.rpcCalls.filter((call) => call.method === "getReviewForThread"),
+      ).toHaveLength(3);
+    });
+    expect(first.inspection.navigateCalls).toHaveLength(1);
     first.lifecycle.unmount();
 
     // A later visit must respect a tab the user has since closed.

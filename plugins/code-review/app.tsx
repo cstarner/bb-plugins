@@ -1588,7 +1588,6 @@ function ReviewTab({ threadId }: { threadId: string }) {
 function ReviewThreadHeaderAction({ threadId }: { threadId: string }) {
   const rpc = useRpc<typeof rpcContract>();
   const navigate = useBbNavigate();
-  const pending = useMemo(() => takePendingTabOpen(threadId), [threadId]);
   const review = useLiveQuery(
     () => rpc.call("getReviewForThread", { threadId }),
     [rpc, threadId],
@@ -1601,10 +1600,13 @@ function ReviewThreadHeaderAction({ threadId }: { threadId: string }) {
   }, [navigate]);
 
   // The panel only sends you here for a review thread, so there is no need to
-  // wait for the lookup before opening.
+  // wait for the lookup before opening. Keyed on the thread alone: BB hands out
+  // a new `navigate` whenever the panel changes, so depending on `open` re-ran
+  // this on every tab switch and dragged the user back to the review tab.
   useEffect(() => {
-    if (pending) open();
-  }, [pending, open]);
+    if (takePendingTabOpen(threadId)) open();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [threadId]);
 
   if (review.data === null) return null;
   return (
