@@ -64,6 +64,32 @@ describe("classifyPullRequest", () => {
     expect(checks).toHaveLength(1);
     expect(classifyPullRequest(base({ checks }))).toBe("WAITING");
   });
+  it("ignores a cancelled matrix job, named by its template, in a workflow run that a later run replaced", () => {
+    const e2e = { workflowName: "E2E", workflowEvent: "pull_request", status: "COMPLETED" };
+    const checks = rollup([
+      { ...e2e, runNumber: 20598, name: "E2E ${{ matrix.shard }}/3", conclusion: "CANCELLED", startedAt: "2026-10-13T20:55:32Z" },
+      { ...e2e, runNumber: 20600, name: "E2E 1/3", conclusion: "SUCCESS", startedAt: "2026-10-13T20:56:09Z" },
+      { ...e2e, runNumber: 20600, name: "Determine if E2E tests are needed", conclusion: "SUCCESS", startedAt: "2026-10-13T20:55:35Z" },
+    ]);
+    expect(checks.map((check) => check.identity)).toEqual(["E2E/E2E 1/3", "E2E/Determine if E2E tests are needed"]);
+    expect(classifyPullRequest(base({ checks }))).toBe("WAITING");
+  });
+  it("keeps a failing check that began after the newer run did, though GitHub files it under the older run", () => {
+    const statusComment = { workflowName: "PR Status Comment", workflowEvent: "pull_request", status: "COMPLETED" };
+    const checks = rollup([
+      { ...statusComment, runNumber: 953, name: "Deploy Preview", conclusion: "FAILURE", startedAt: "2026-10-13T21:04:37Z" },
+      { ...statusComment, runNumber: 955, name: "Create the status comment", conclusion: "SUCCESS", startedAt: "2026-10-13T20:55:35Z" },
+    ]);
+    expect(classifyPullRequest(base({ checks }))).toBe("FAILING");
+  });
+  it("keeps the runs of one workflow that different events started", () => {
+    const check = { workflowName: "Check", status: "COMPLETED" };
+    const checks = rollup([
+      { ...check, workflowEvent: "push", runNumber: 7, name: "Lint", conclusion: "FAILURE", startedAt: "2026-10-13T20:55:32Z" },
+      { ...check, workflowEvent: "pull_request", runNumber: 8, name: "Typecheck", conclusion: "SUCCESS", startedAt: "2026-10-13T20:55:35Z" },
+    ]);
+    expect(classifyPullRequest(base({ checks }))).toBe("FAILING");
+  });
   it("keeps distinct checks that share a name across workflows", () => {
     const checks = rollup([
       { workflowName: "Test", name: "Identify changed files", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-09-01T20:51:05Z" },

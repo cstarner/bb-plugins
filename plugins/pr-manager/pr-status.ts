@@ -1,13 +1,18 @@
 export type PullRequestStatus = "OPEN" | "DRAFT" | "WAITING" | "FAILING" | "FEEDBACK" | "APPROVED" | "PART_APPROVED" | "MERGED";
 export const PULL_REQUEST_STATUSES = ["FAILING", "FEEDBACK", "OPEN", "APPROVED", "PART_APPROVED", "WAITING", "DRAFT", "MERGED"] as const;
 
-// An entry of the status check rollup: either a check run (name, workflowName, status,
-// conclusion, startedAt) or a commit status (context, state, createdAt).
+// An entry of the status check rollup: either a check run (name, workflowName,
+// workflowEvent, runNumber, status, conclusion, startedAt) or a commit status (context,
+// state, createdAt).
 export interface RollupEntry {
-  name?: string; workflowName?: string; context?: string;
+  name?: string; workflowName?: string; workflowEvent?: string; runNumber?: number; context?: string;
   status?: string; conclusion?: string; state?: string; startedAt?: string; createdAt?: string;
 }
-export interface CheckRun { identity: string; startedAt: string; status: string; conclusion: string }
+// Which run of which workflow a check belongs to. A workflow that two events start, such
+// as a push and a pull request, counts as two workflows, because neither run replaces
+// the other.
+interface WorkflowRun { workflow: string; number: number }
+export interface CheckRun { identity: string; startedAt: string; status: string; conclusion: string; workflowRun?: WorkflowRun }
 export interface ReviewInput { author: string; isBot: boolean; state: string; submittedAt: string }
 export interface CommentInput { author: string; isBot: boolean; createdAt: string }
 export interface PullRequestStatusInput {
@@ -22,15 +27,38 @@ export function normalizeCheck(check: RollupEntry): CheckRun {
   const status = check.status ?? (state === "PENDING" || state === "EXPECTED" ? "IN_PROGRESS" : "COMPLETED");
   // Commit statuses identify themselves by context; check runs by name within a workflow.
   const identity = check.context ?? `${check.workflowName ?? ""}/${check.name ?? ""}`;
-  return { identity, startedAt: check.startedAt ?? check.createdAt ?? "", status: status.toUpperCase(), conclusion: state.toUpperCase() };
+  const workflowRun = check.runNumber === undefined ? undefined
+    : { workflow: `${check.workflowName ?? ""}/${check.workflowEvent ?? ""}`, number: check.runNumber };
+  return { identity, startedAt: check.startedAt ?? check.createdAt ?? "", status: status.toUpperCase(), conclusion: state.toUpperCase(), workflowRun };
+}
+// A second run of a workflow for the same commit replaces the first: changing a pull
+// request while its workflows are starting cancels the runs just begun. Matching checks
+// by name misses some of what the cancelled run leaves behind, because a matrix job
+// cancelled before its matrix was worked out is named by its template
+// ("E2E ${{ matrix.shard }}/3"), a name no job of the newer run has. Only checks that
+// began before the newer run did are dropped, since GitHub can file a check that another
+// workflow creates later under the older run.
+function withoutReplacedWorkflowRuns(checks: CheckRun[]): CheckRun[] {
+  const newestRuns = new Map<string, { number: number; startedAt: string }>();
+  for (const { workflowRun, startedAt } of checks) {
+    if (workflowRun === undefined) continue;
+    const newest = newestRuns.get(workflowRun.workflow);
+    if (newest === undefined || workflowRun.number > newest.number) newestRuns.set(workflowRun.workflow, { number: workflowRun.number, startedAt });
+    // A run starts with its first check. A check still queued has no start time yet.
+    else if (workflowRun.number === newest.number && startedAt !== "" && (newest.startedAt === "" || startedAt < newest.startedAt)) newest.startedAt = startedAt;
+  }
+  return checks.filter(({ workflowRun, startedAt }) => {
+    const newest = workflowRun && newestRuns.get(workflowRun.workflow);
+    return newest === undefined || workflowRun?.number === newest.number || startedAt >= newest.startedAt;
+  });
 }
 // Re-running a check appends another entry to the status check rollup instead of
 // replacing the earlier attempt, so the rollup still reports the cancelled run of a
-// check that has since passed. GitHub's checks UI (and `gh pr checks`) only show the
-// most recent run of each check, so drop the superseded ones the same way.
+// check that has since passed. GitHub's checks UI only shows the most recent run of
+// each check, so drop the superseded ones the same way.
 export function latestCheckRuns(checks: CheckRun[]): CheckRun[] {
   const latest = new Map<string, CheckRun>();
-  for (const check of checks) {
+  for (const check of withoutReplacedWorkflowRuns(checks)) {
     const previous = latest.get(check.identity);
     if (previous === undefined || check.startedAt > previous.startedAt) latest.set(check.identity, check);
   }
