@@ -1799,8 +1799,9 @@ export default definePluginApp((app) => {
   app.slots.navPanel({
     id: PANEL_ID,
     title: "Code Review",
-    // Only a fallback: the manifest icon asset wins on compact surfaces.
-    icon: "Search",
+    // Deliberately not a stock BB icon name: a stock name is drawn in place of
+    // the manifest's assets/icon.svg, while an unknown one falls back to it.
+    icon: "code-review",
     path: PANEL_PATH,
     component: CodeReviewPanel,
   });
