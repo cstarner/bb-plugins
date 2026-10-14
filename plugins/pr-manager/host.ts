@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
 import { hostContract } from "./contract.js";
-import { pullRequestSourceRef } from "./git-ref.js";
+import { preparePullRequestBase, renameToPullRequestBranch } from "./git-ref.js";
 import { fetchPullRequests } from "./pr-search.js";
 import { sortPullRequests } from "./pr-list.js";
 
@@ -36,14 +36,14 @@ export default experimental_defineHostEntry({
       const pullRequests = fetched.value;
       return { pullRequests: sortPullRequests(pullRequests, "STATUS") };
     },
-    async preparePullRequestBranch({ projectPath, repository, number }, context) {
-      const remote = await run("git", ["-C", projectPath, "remote", "get-url", "origin"], context.signal);
-      if (normalizeRemote(remote) !== repository.toLowerCase()) throw new Error(`Project origin does not match ${repository}.`);
-      // Keep the PR head outside refs/remotes. BB refreshes and prunes the
-      // project's remote-tracking refs before provisioning a worktree.
-      const ref = pullRequestSourceRef(number);
-      await run("git", ["-C", projectPath, "fetch", "--force", "origin", `+refs/pull/${number}/head:${ref}`], context.signal);
-      return { ref };
+    async preparePullRequestBranch({ projectPath, repository, number, headRefName }, context) {
+      const git = (...args: string[]) => run("git", ["-C", projectPath, ...args], context.signal);
+      if (normalizeRemote(await git("remote", "get-url", "origin")) !== repository.toLowerCase()) throw new Error(`Project origin does not match ${repository}.`);
+      return preparePullRequestBase(number, headRefName, git);
+    },
+    async renameBranchToPullRequestHead({ worktreePath, createdBranch, headRefName }, context) {
+      await renameToPullRequestBranch(createdBranch, headRefName, (...args) => run("git", ["-C", worktreePath, ...args], context.signal));
+      return null;
     },
   },
 });

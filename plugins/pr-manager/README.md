@@ -13,7 +13,8 @@ A GitHub CLI-backed BB plugin for keeping ongoing pull requests visible and acti
 - Filters by status, searches by keyword across title, repository, number, branch and status, and sorts by status, creation or last update. The selected project and sort order are remembered between sessions.
 - Asks what the agent should do when you create a thread, and sends that as the thread's first message. The list stays on screen afterwards, and the PR's row gains an "Open thread" button.
 - Finds existing BB threads by remembered PR links or matching project branches.
-- Fetches a PR-specific Git ref and spawns a managed BB worktree/thread when requested.
+- Spawns a managed BB worktree/thread on the pull request's own branch when requested, so `git pull` and `git push` work there and BB shows the pull request under the thread. The worktree's branch takes the pull request's branch name. A local branch that already has the name is replaced when it holds no commits of its own; when it does, or is checked out in another worktree, the new branch keeps the name BB gave it: BB then shows no pull request, and pushing needs `git push origin HEAD:<branch>`.
+- Starts the thread from a PR-specific Git ref instead, with no upstream, when the pull request comes from a fork or its branch has been deleted.
 - Provides cached and explicit-refresh commands through `bb pr-manager list [--repo owner/name] [--json]` and `bb pr-manager refresh [--repo owner/name] [--json]`, which act on the selected project unless `--repo` names another.
 
 Every open PR is listed. The merged-PR window and the number of merged PRs per project are configurable in BB’s plugin settings. A connected machine needs `gh` installed and authenticated.

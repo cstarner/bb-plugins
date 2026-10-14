@@ -18,20 +18,32 @@ const project = (id: string, name: string, gitRemoteUrl: string | null) => ({
 });
 const webProject = project("project-web", "web", "git@github.com:acme/web.git");
 const apiProject = project("project-api", "API", "https://github.com/Acme/Api.git");
-const spawnedThread = makeThreadResponse({ id: "thread-new", projectId: webProject.id, title: "PR #1: PR 1" });
+const spawnedThread = makeThreadResponse({ id: "thread-new", projectId: webProject.id, title: "PR #1: PR 1", environmentId: null });
+const spawnedEnvironment = { path: "/worktrees/thread-new/web", branchName: "bb/pr-1-pr-1-thread-new", hostId: "host-1" };
 
 // BB's projects and GitHub's PRs as the plugin sees them; tests change both between calls.
 async function loadPlugin(pullRequests: HostPullRequest[]) {
-  const world = { projects: [webProject, apiProject], pullRequests };
+  const world = { projects: [webProject, apiProject], pullRequests, prepared: { ref: "origin/branch-1", tracksHeadBranch: true },
+    // What the new thread's worktree reports each time it is asked, the last one from then on.
+    // null is a thread that has no environment yet.
+    environmentStatuses: ["ready"] as (string | null)[],
+  };
   const listCalls: unknown[] = [];
+  const spawnCalls: unknown[] = [];
+  const renameCalls: unknown[] = [];
   const { bb, harness } = createFakePluginHost({
     sdk: {
       projects: { list: () => world.projects },
-      threads: { list: () => [], spawn: () => spawnedThread, get: () => spawnedThread },
+      threads: {
+        list: () => [], spawn: (args: unknown) => { spawnCalls.push(args); return spawnedThread; },
+        get: () => ({ ...spawnedThread, environmentId: world.environmentStatuses[0] === null ? null : "env-new" }),
+      },
+      environments: { get: () => ({ ...spawnedEnvironment, status: world.environmentStatuses[0] }) },
       hosts: { list: () => [{ id: "host-1", status: "connected" }] },
     },
     experimental_callHostRpc: ({ method, input }: ExperimentalFakeHostRpcCall) => {
-      if (method === "preparePullRequestBranch") return { ref: "refs/bb/pull/1" };
+      if (method === "preparePullRequestBranch") return world.prepared;
+      if (method === "renameBranchToPullRequestHead") { renameCalls.push(input); return null; }
       if (method !== "listPullRequests") throw new Error(`unexpected host call ${method}`);
       listCalls.push(input);
       const { repository } = hostContract.listPullRequests.input.parse(input);
@@ -41,8 +53,12 @@ async function loadPlugin(pullRequests: HostPullRequest[]) {
   await plugin(bb);
   const call = async (method: "prs_list" | "prs_refresh" | "prs_set_view" | "prs_set_feedback_muted", input: unknown) =>
     rpcContract[method].output.parse(await harness.callRpc(method, input));
-  return { world, harness, listCalls, call };
+  return { world, harness, listCalls, spawnCalls, renameCalls, call };
 }
+const createThreadForPr1 = {
+  repository: "acme/web", number: 1, title: "PR 1", url: "https://github.com/acme/web/pull/1",
+  headRefName: "branch-1", baseRefName: "main", projectId: webProject.id, instructions: "Fix it.",
+};
 
 afterEach(() => { vi.useRealTimers(); });
 
@@ -124,10 +140,7 @@ describe("per-project pull request lists", () => {
     const { harness, call } = await loadPlugin([hostPr("acme/web", 1), hostPr("Acme/Api", 1)]);
     await call("prs_refresh", { repository: "acme/web" });
     await call("prs_refresh", { repository: "Acme/Api" });
-    await harness.callRpc("prs_create_thread", {
-      repository: "acme/web", number: 1, title: "PR 1", url: "https://github.com/acme/web/pull/1",
-      headRefName: "branch-1", baseRefName: "main", projectId: webProject.id, instructions: "Fix it.",
-    });
+    await harness.callRpc("prs_create_thread", createThreadForPr1);
     expect((await call("prs_set_view", { repository: "acme/web", sortOrder: "STATUS" })).list?.prs[0]?.threadId).toBe("thread-new");
     expect((await call("prs_set_view", { repository: "Acme/Api", sortOrder: "STATUS" })).list?.prs[0]?.threadId).toBeNull();
     expect(await harness.callRpc("prs_resolve_thread", { repository: "acme/web", number: 1 }))
@@ -197,5 +210,43 @@ describe("muting feedback", () => {
     const { call } = await loadPlugin([hostPr("acme/web", 1)]);
     await call("prs_refresh", { repository: "acme/web" });
     await expect(call("prs_set_feedback_muted", { repository: "acme/web", number: 1, muted: true })).rejects.toThrow("acme/web#1 has no feedback to mute");
+  });
+});
+
+describe("the branch of a new pull request thread", () => {
+  const spawnedFrom = (ref: string) => [{ environment: { workspace: { type: "managed-worktree", baseBranch: { kind: "named", name: ref } } } }];
+
+  it("starts from origin's branch and takes its name once the worktree is ready", async () => {
+    vi.useFakeTimers();
+    const { world, harness, spawnCalls, renameCalls } = await loadPlugin([hostPr("acme/web", 1)]);
+    world.environmentStatuses = [null];
+    await harness.callRpc("prs_create_thread", createThreadForPr1);
+    expect(spawnCalls).toMatchObject(spawnedFrom("origin/branch-1"));
+    world.environmentStatuses = ["provisioning"];
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(renameCalls).toEqual([]);
+    world.environmentStatuses = ["ready"];
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(renameCalls).toEqual([
+      { worktreePath: "/worktrees/thread-new/web", createdBranch: "bb/pr-1-pr-1-thread-new", headRefName: "branch-1" },
+    ]);
+  });
+
+  it("leaves the branch alone, and says so in the log, when the worktree fails to set up", async () => {
+    const { world, harness, renameCalls } = await loadPlugin([hostPr("acme/web", 1)]);
+    world.environmentStatuses = ["error"];
+    await harness.callRpc("prs_create_thread", createThreadForPr1);
+    await vi.waitFor(() => expect(harness.logEntries.map((entry) => entry.message))
+      .toContain("Left the branch of acme/web#1's thread as BB named it: its worktree is error"));
+    expect(renameCalls).toEqual([]);
+  });
+
+  it("keeps the name BB gave it when the pull request's branch is not on origin", async () => {
+    const { world, harness, spawnCalls, renameCalls } = await loadPlugin([hostPr("acme/web", 1)]);
+    world.prepared = { ref: "refs/bb/pr-manager/pull/1", tracksHeadBranch: false };
+    await harness.callRpc("prs_create_thread", createThreadForPr1);
+    expect(spawnCalls).toMatchObject(spawnedFrom("refs/bb/pr-manager/pull/1"));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(renameCalls).toEqual([]);
   });
 });
