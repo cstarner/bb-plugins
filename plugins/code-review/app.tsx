@@ -349,7 +349,7 @@ function PrRow({
   onOpenArchivedThread,
 }: {
   pr: PullRequestDto;
-  onStart: () => void;
+  onStart: () => Promise<void>;
   onOpen: () => void;
   onOpenArchivedThread: () => void;
 }) {
@@ -361,6 +361,18 @@ function PrRow({
   // review stranded in one reads as no review at all: the action is a new one.
   const hasReview = pr.reviewStatus !== "none" && !pr.reviewThreadArchived;
   const archivedThread = pr.reviewThreadArchived ? pr.reviewThreadId : null;
+  // Starting leaves you on the list, so the row is what says it is happening.
+  // It holds until the list comes back with the review on it, or a second
+  // press in that gap would spend a second agent run.
+  const [startRequested, setStartRequested] = useState(false);
+  const isStarting = startRequested && !hasReview;
+  const start = () => {
+    setStartRequested(true);
+    onStart().catch((cause: unknown) => {
+      setStartRequested(false);
+      reportError(cause);
+    });
+  };
   return (
     <div className="flex w-full flex-col gap-1.5 rounded-lg border border-border bg-card px-3 py-2.5 text-left">
       <div className="flex items-start gap-2">
@@ -396,10 +408,11 @@ function PrRow({
           variant="outline"
           size="sm"
           className="h-7 gap-1.5 text-xs"
-          onClick={hasReview ? onOpen : onStart}
+          onClick={hasReview ? onOpen : start}
+          disabled={isStarting}
         >
           <Icon name={hasReview ? "Bug" : "Bot"} className="size-3.5" />
-          {hasReview ? "Open review" : "Start review"}
+          {hasReview ? "Open review" : isStarting ? "Starting…" : "Start review"}
         </Button>
         {archivedThread === null ? null : (
           <Button
@@ -443,7 +456,7 @@ function PrListView({
   onRepoChange: (repo: string) => void;
   onFilterChange: (filter: PrFilter) => void;
   myTeams: string[];
-  onStartReview: (repo: string, number: number) => void;
+  onStartReview: (repo: string, number: number) => Promise<void>;
   onOpenReview: (repo: string, number: number) => void;
   onOpenArchivedThread: (threadId: string) => void;
 }) {
@@ -1469,7 +1482,7 @@ function FindingDetailView({
 // ---------------------------------------------------------------------------
 
 /**
- * The thread the home screen last sent the user to.
+ * The thread "Open review" on the home screen last sent the user to.
  * Writing the tab onto the thread server-side makes it exist; it does not open
  * it, because which tab is showing is client panel state that only
  * `openThreadPanel` reaches — and that call works only from inside the thread
@@ -1675,16 +1688,6 @@ function CodeReviewPanel() {
     [rpc, repo, filter],
   );
 
-  // Both actions end in the same place: standing in the review's thread with
-  // its review tab beside it. They differ in whether an agent run is spent.
-  const goToReview = useCallback(
-    (threadId: string) => {
-      notePendingTabOpen(threadId);
-      navigate.toThread(threadId);
-    },
-    [navigate],
-  );
-
   // No review tab and no pending-tab note: the thread is archived, so this is
   // a read-only trip into the old conversation, not a place to keep working.
   const openArchivedThread = useCallback(
@@ -1696,25 +1699,23 @@ function CodeReviewPanel() {
 
   const openReview = useCallback(
     (nextRepo: string, number: number) => {
-      rpc.call("openReview", { repo: nextRepo, number }).then(
-        (opened) => goToReview(opened.threadId),
-        reportError,
-      );
-    },
-    [rpc, goToReview],
-  );
-
-  const startReview = useCallback(
-    (nextRepo: string, number: number) => {
-      rpc.call("startReview", { repo: nextRepo, number }).then((started) => {
-        if (started.review.threadId === null) {
-          toast.error("The review started but has no thread yet.");
-          return;
-        }
-        goToReview(started.review.threadId);
+      rpc.call("openReview", { repo: nextRepo, number }).then((opened) => {
+        // Ends standing in the review's thread with its review tab beside it.
+        notePendingTabOpen(opened.threadId);
+        navigate.toThread(opened.threadId);
       }, reportError);
     },
-    [rpc, goToReview],
+    [rpc, navigate],
+  );
+
+  // Stays on the list so the next pull request can be dealt with: the server
+  // announces the new review, and the row's "Open review" goes to its thread
+  // when it is wanted.
+  const startReview = useCallback(
+    async (nextRepo: string, number: number) => {
+      await rpc.call("startReview", { repo: nextRepo, number });
+    },
+    [rpc],
   );
 
   const ghState = status.data?.state ?? "checking";

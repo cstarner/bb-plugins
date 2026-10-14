@@ -1182,12 +1182,16 @@ describe("starting and opening a review from the home screen", () => {
     slot.lifecycle.unmount();
   });
 
-  it("offers Start review for a PR nothing has reviewed yet", async () => {
+  it("starts a review without leaving the list, and offers it from the row", async () => {
     const app = await load();
+    // The server records the review and announces it, so every later list has it.
+    let pullRequest = { ...PR, reviewStatus: "none", openFindings: 0 };
     const slot = home(app, {
-      listPullRequests: () => ({
-        pullRequests: [{ ...PR, reviewStatus: "none", openFindings: 0 }],
-      }),
+      listPullRequests: () => ({ pullRequests: [pullRequest] }),
+      startReview: () => {
+        pullRequest = { ...PR, reviewStatus: "running", openFindings: 0 };
+        return { review: REVIEW };
+      },
     });
     fireEvent.click(await slot.findByText("Start review"));
     await waitFor(() => {
@@ -1195,11 +1199,41 @@ describe("starting and opening a review from the home screen", () => {
         slot.inspection.rpcCalls.find((entry) => entry.method === "startReview")?.input,
       ).toEqual({ repo: "acme/app", number: 7 });
     });
+    // No second press, and so no second agent run, until the list catches up.
+    expect((await slot.findByText("Starting…")).closest("button")).toHaveProperty("disabled", true);
+
+    await slot.behavior.emitRealtime("code-review-changed", { at: "2026-01-02T00:00:00Z" });
+    const openReview = await slot.findByText("Open review");
+    expect(slot.inspection.navigateCalls).toEqual([]);
+
+    // Going to the review is still one click away.
+    fireEvent.click(openReview);
     await waitFor(() => {
       expect(slot.inspection.navigateCalls).toContainEqual(
         expect.objectContaining({ threadId: "thr_1" }),
       );
     });
+    slot.lifecycle.unmount();
+  });
+
+  it("offers Start review again when the review could not be started", async () => {
+    const app = await load();
+    const slot = home(app, {
+      listPullRequests: () => ({
+        pullRequests: [{ ...PR, reviewStatus: "none", openFindings: 0 }],
+      }),
+      startReview: () => {
+        throw new Error("GitHub is not reachable");
+      },
+    });
+    fireEvent.click(await slot.findByText("Start review"));
+    await waitFor(() => {
+      expect(slot.inspection.rpcCalls.some((entry) => entry.method === "startReview")).toBe(true);
+    });
+    await waitFor(() => {
+      expect(slot.getByText("Start review").closest("button")).toHaveProperty("disabled", false);
+    });
+    expect(slot.inspection.navigateCalls).toEqual([]);
     slot.lifecycle.unmount();
   });
 

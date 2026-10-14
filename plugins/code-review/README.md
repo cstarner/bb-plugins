@@ -14,10 +14,11 @@ yourself — one comment at a time, edited how you want it.
    costs an agent run and should never happen by accident. **Start review**
    spawns a BB thread that runs the review skills you configured, writes
    structured findings to a JSON file, and submits them with
-   `bb code-review submit`. **Open review**, on a pull request already
-   reviewed, goes straight to that thread and spends nothing. Either way a
-   **Code review** tab opens beside the thread, and **Re-run review** inside it
-   asks for a fresh pass.
+   `bb code-review submit`. The list stays on screen while it runs, so you can
+   start the next one, and the row's button becomes **Open review**. That goes
+   straight to the review's thread and spends nothing; a **Code review** tab
+   opens beside the thread, and **Re-run review** inside it asks for a fresh
+   pass.
 3. **Skim the issues.** The tab is a plain list: severity, title, and a
    three-line gist. Nothing else, plus one link through to the PR on GitHub.
 4. **Open an issue** and the comment is the first thing there, under the
