@@ -1,8 +1,22 @@
 // @vitest-environment jsdom
 import { fireEvent, waitFor } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { FindingDto, PullRequestDto, ReviewDto } from "./server";
+
+/**
+ * BB rebuilds `useBbNavigate()`'s object whenever anything it closes over
+ * changes — the thread panel's opener, the route — so a slot re-renders with
+ * a new one every time the user switches tab. The harness hands out one stable
+ * object; a fresh copy per render keeps effects honest about that.
+ */
+vi.mock("@get-bb/plugin-sdk/app", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@get-bb/plugin-sdk/app")>();
+  return {
+    ...actual,
+    useBbNavigate: () => ({ ...actual.useBbNavigate() }),
+  };
+});
 
 /**
  * The thunk matters: app.tsx binds the plugin runtime at module load, so
@@ -1369,61 +1383,77 @@ describe("the review tab opening itself", () => {
     app: Awaited<ReturnType<typeof load>>,
     threadId: string,
     overrides: RpcOverrides = {},
+    openThreadPanel: () => boolean = () => true,
   ) =>
     renderSlot(
       app.threadHeaderActions[0]!,
       { threadId, projectId: "proj_1", isCompactViewport: false },
-      { rpc: rpc(overrides), openThreadPanel: () => true },
+      { rpc: rpc(overrides), openThreadPanel },
     );
 
-  it("opens the review tab for the thread the panel just sent you to", async () => {
-    const app = await load();
-    const panel = renderSlot(app.navPanels[0]!, { subPath: "" }, { rpc: rpc() });
-    fireEvent.click(await panel.findByText("Open review"));
-    await waitFor(() => {
-      expect(panel.inspection.navigateCalls).toContainEqual(
-        expect.objectContaining({ threadId: "thr_1" }),
-      );
-    });
-    panel.lifecycle.unmount();
+  const opensOf = (slot: ReturnType<typeof header>) =>
+    slot.inspection.navigateCalls.filter((call) => call.method === "openThreadPanel");
 
-    // BB then mounts the thread, and this slot with it.
+  /** Re-render the header twice, as switching tabs does in BB. */
+  const rerenderTwice = async (slot: ReturnType<typeof header>) => {
+    await slot.behavior.emitRealtime("code-review-changed", {});
+    await slot.behavior.emitRealtime("code-review-changed", {});
+    await waitFor(() => {
+      expect(
+        slot.inspection.rpcCalls.filter((call) => call.method === "getReviewForThread"),
+      ).toHaveLength(3);
+    });
+  };
+
+  it("opens the review tab when a review thread opens", async () => {
+    const app = await load();
     const slot = header(app, "thr_1");
     await waitFor(() => {
-      expect(slot.inspection.navigateCalls).toContainEqual(
-        expect.objectContaining({
-          method: "openThreadPanel",
-          // No params, so BB matches the tab the server wrote.
-          options: { actionId: "review" },
-        }),
-      );
+      expect(opensOf(slot)).toEqual([
+        // No params, so BB matches the tab the server wrote.
+        expect.objectContaining({ options: { actionId: "review" } }),
+      ]);
     });
     slot.lifecycle.unmount();
   });
 
-  it("opens it once, not again every time you come back to the thread", async () => {
+  it("opens it once per visit, so switching to another tab is not undone", async () => {
     const app = await load();
-    const panel = renderSlot(app.navPanels[0]!, { subPath: "" }, { rpc: rpc() });
-    fireEvent.click(await panel.findByText("Open review"));
-    await waitFor(() => expect(panel.inspection.navigateCalls.length).toBeGreaterThan(0));
-    panel.lifecycle.unmount();
-
-    const first = header(app, "thr_1");
-    await waitFor(() => expect(first.inspection.navigateCalls).toHaveLength(1));
-    first.lifecycle.unmount();
-
-    // A later visit must respect a tab the user has since closed.
-    const second = header(app, "thr_1");
-    await second.findByText("Code review");
-    expect(second.inspection.navigateCalls).toEqual([]);
-    second.lifecycle.unmount();
+    const slot = header(app, "thr_1");
+    await waitFor(() => expect(opensOf(slot)).toHaveLength(1));
+    await rerenderTwice(slot);
+    expect(opensOf(slot)).toHaveLength(1);
+    slot.lifecycle.unmount();
   });
 
-  it("does not open a tab in a thread the panel did not send you to", async () => {
+  it("keeps trying until BB's side panel is ready to take it", async () => {
     const app = await load();
-    const slot = header(app, "thr_other");
-    await slot.findByText("Code review");
-    expect(slot.inspection.navigateCalls).toEqual([]);
+    // BB declines until the thread's side panel has registered itself.
+    let ready = false;
+    const slot = header(app, "thr_1", {}, () => ready);
+    await waitFor(() => expect(opensOf(slot).length).toBeGreaterThan(0));
+    ready = true;
+    await rerenderTwice(slot);
+    const accepted = opensOf(slot).length;
+    await slot.behavior.emitRealtime("code-review-changed", {});
+    await waitFor(() => {
+      expect(
+        slot.inspection.rpcCalls.filter((call) => call.method === "getReviewForThread"),
+      ).toHaveLength(4);
+    });
+    expect(opensOf(slot)).toHaveLength(accepted);
+    slot.lifecycle.unmount();
+  });
+
+  it("does not open a tab in a thread that is not a review", async () => {
+    const app = await load();
+    const slot = header(app, "thr_plain", { getReviewForThread: () => null });
+    await waitFor(() => {
+      expect(slot.inspection.rpcCalls.some((entry) => entry.method === "getReviewForThread")).toBe(
+        true,
+      );
+    });
+    expect(opensOf(slot)).toEqual([]);
     slot.lifecycle.unmount();
   });
 

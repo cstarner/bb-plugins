@@ -1510,32 +1510,6 @@ function FindingDetailView({
 // ---------------------------------------------------------------------------
 
 /**
- * The thread "Open review" on the home screen last sent the user to.
- * Writing the tab onto the thread server-side makes it exist; it does not open
- * it, because which tab is showing is client panel state that only
- * `openThreadPanel` reaches — and that call works only from inside the thread
- * surface, which the home screen is not. So the panel leaves this note and the
- * thread header slot picks it up when BB mounts the thread.
- *
- * It is a one-shot keyed by thread id, not per-thread state: every mounted
- * header instance reads it, and only the one whose thread matches acts.
- */
-let pendingTabOpenThreadId: string | null = null;
-
-function notePendingTabOpen(threadId: string): void {
-  pendingTabOpenThreadId = threadId;
-}
-
-/** Read and clear the note, saying whether it was for this thread. */
-function takePendingTabOpen(threadId: string): boolean {
-  if (pendingTabOpenThreadId !== threadId) return false;
-  // One shot: coming back to the thread later must respect a tab the user has
-  // since closed.
-  pendingTabOpenThreadId = null;
-  return true;
-}
-
-/**
  * A thread's review tab. It carries no params — a review thread holds one
  * review, so the thread says which. Tabs saved by earlier versions do carry
  * the PR in their params; those are ignored, since the thread gives the same
@@ -1588,7 +1562,6 @@ function ReviewTab({ threadId }: { threadId: string }) {
 function ReviewThreadHeaderAction({ threadId }: { threadId: string }) {
   const rpc = useRpc<typeof rpcContract>();
   const navigate = useBbNavigate();
-  const pending = useMemo(() => takePendingTabOpen(threadId), [threadId]);
   const review = useLiveQuery(
     () => rpc.call("getReviewForThread", { threadId }),
     [rpc, threadId],
@@ -1596,15 +1569,22 @@ function ReviewThreadHeaderAction({ threadId }: { threadId: string }) {
 
   // The tab has no params, so this matches the one written server-side and
   // focuses it rather than opening a second.
-  const open = useCallback(() => {
-    navigate.openThreadPanel({ actionId: "review" });
-  }, [navigate]);
+  const open = useCallback(
+    () => navigate.openThreadPanel({ actionId: "review" }),
+    [navigate],
+  );
 
-  // The panel only sends you here for a review thread, so there is no need to
-  // wait for the lookup before opening.
+  // Open the review tab once each time a review thread opens. BB declines
+  // until the thread's side panel has registered itself, so keep asking as
+  // `navigate` and the lookup change — but stop once it accepts: BB hands out
+  // a new `navigate` on every panel change, and asking again then would drag
+  // the user back from whichever tab they picked.
+  const isReview = review.data !== null;
+  const openedForThread = useRef<string | null>(null);
   useEffect(() => {
-    if (pending) open();
-  }, [pending, open]);
+    if (!isReview || openedForThread.current === threadId) return;
+    if (open()) openedForThread.current = threadId;
+  }, [isReview, threadId, open]);
 
   if (review.data === null) return null;
   return (
@@ -1716,8 +1696,8 @@ function CodeReviewPanel() {
     [rpc, repo, filter],
   );
 
-  // No review tab and no pending-tab note: the thread is archived, so this is
-  // a read-only trip into the old conversation, not a place to keep working.
+  // The thread is archived, so this is a read-only trip into the old
+  // conversation: no server round trip to write its review tab first.
   const openArchivedThread = useCallback(
     (threadId: string) => {
       navigate.toThread(threadId);
@@ -1728,8 +1708,7 @@ function CodeReviewPanel() {
   const openReview = useCallback(
     (nextRepo: string, number: number) => {
       rpc.call("openReview", { repo: nextRepo, number }).then((opened) => {
-        // Ends standing in the review's thread with its review tab beside it.
-        notePendingTabOpen(opened.threadId);
+        // The thread's header opens the review tab beside it.
         navigate.toThread(opened.threadId);
       }, reportError);
     },
