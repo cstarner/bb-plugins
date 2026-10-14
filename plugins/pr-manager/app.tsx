@@ -337,5 +337,13 @@ function PrManagerPage() {
   );
 }
 export default definePluginApp((app) => {
-  app.slots.navPanel({ id: "pull-requests", title: "Pull requests", icon: "GitPullRequest", path: "pull-requests", component: PrManagerPage });
+  app.slots.navPanel({
+    id: "pull-requests",
+    title: "Pull requests",
+    // Deliberately not a stock BB icon name: a stock name is drawn in place of
+    // the manifest's assets/icon.svg, while an unknown one falls back to it.
+    icon: "pull-requests",
+    path: "pull-requests",
+    component: PrManagerPage,
+  });
 });
