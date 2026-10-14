@@ -48,6 +48,10 @@ interface SpawnRecord {
   title: string;
   parentThreadId: string | null;
   visibility: string | null;
+  providerId: string | null;
+  model: string | null;
+  reasoningLevel: string | null;
+  serviceTier: string | null;
 }
 
 /**
@@ -64,6 +68,14 @@ async function makeHost(
     /** argv prefix -> the message that gh call should fail with. */
     ghFailures?: Record<string, string>;
     spawnError?: string;
+    /** What BB reports as the project's default model and settings. */
+    projectDefaultModel?: {
+      providerId: string;
+      model: string;
+      reasoningLevel: "high";
+      serviceTier: "default";
+      permissionMode: "auto";
+    };
     /** Thread ids `threads.get` should report as gone. */
     missingThreadIds?: string[];
     /** Thread ids BB should report as archived, both on get and in the project listing. */
@@ -147,6 +159,7 @@ async function makeHost(
       projects: {
         list: async () =>
           options.archivedThreadIds === undefined ? [] : [{ id: "proj_test", name: "test" }],
+        defaultExecutionOptions: async () => options.projectDefaultModel ?? null,
       },
       threads: {
         list: async (args) => {
@@ -168,6 +181,10 @@ async function makeHost(
             title: args.title ?? "",
             parentThreadId: args.parentThreadId ?? null,
             visibility: args.visibility ?? null,
+            providerId: args.providerId ?? null,
+            model: args.model ?? null,
+            reasoningLevel: args.reasoningLevel ?? null,
+            serviceTier: args.serviceTier ?? null,
           });
           const id = `thr_${spawned.length}`;
           tabs.set(id, { revision: 1, tabs: [] });
@@ -553,6 +570,25 @@ describe("startReview", () => {
     });
     expect(review.skills).toEqual(["rob-review", "security-review"]);
     expect(spawned[0]?.prompt).toContain("`security-review` skill");
+  });
+
+  it("leaves the model to the project's default until one is chosen", async () => {
+    const { call, spawned } = await makeHost();
+    await call("startReview", { repo: REPO, number: 7 });
+    expect(spawned[0]).toMatchObject({
+      providerId: null,
+      model: null,
+      reasoningLevel: null,
+      serviceTier: null,
+    });
+  });
+
+  it("runs the review on the chosen model", async () => {
+    const { call, spawned } = await makeHost();
+    const chosen = { providerId: "codex", model: "gpt-6-astra", reasoningLevel: "high" };
+    await call("setReviewModel", chosen);
+    await call("startReview", { repo: REPO, number: 7 });
+    expect(spawned[0]).toMatchObject({ ...chosen, serviceTier: null });
   });
 
   it("explains how to fix it when no BB project is attached to the repo", async () => {
@@ -2116,5 +2152,39 @@ describe("registrations", () => {
       expect(harness.registrations.rpcMethods).not.toContain(method);
     }
     expect(harness.registrations.threadEventHandlers["thread.idle"]).toBe(1);
+  });
+});
+
+describe("getReviewModel", () => {
+  const projectDefaultModel = {
+    providerId: "claude-code",
+    model: "claude-opus-5-5",
+    reasoningLevel: "high",
+    serviceTier: "default",
+    permissionMode: "auto",
+  } as const;
+
+  it("shows the project's default until a model is chosen", async () => {
+    const { call } = await makeHost({ projectDefaultModel });
+    expect(await call("getReviewModel", { repo: REPO })).toEqual({
+      providerId: "claude-code",
+      model: "claude-opus-5-5",
+      reasoningLevel: "high",
+      serviceTier: "default",
+    });
+  });
+
+  it("has nothing to show when the project has no default either", async () => {
+    const { call } = await makeHost();
+    expect(await call("getReviewModel", { repo: REPO })).toBeNull();
+    expect(await call("getReviewModel", { repo: null })).toBeNull();
+  });
+
+  it("returns the chosen model over the project's default", async () => {
+    const { call } = await makeHost({ projectDefaultModel });
+    const chosen = { providerId: "codex", model: "gpt-6-astra", reasoningLevel: "xhigh" };
+    await call("setReviewModel", chosen);
+    expect(await call("getReviewModel", { repo: REPO })).toEqual(chosen);
+    expect(await call("getReviewModel", { repo: null })).toEqual(chosen);
   });
 });

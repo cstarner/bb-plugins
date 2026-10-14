@@ -14,6 +14,7 @@ import type { ReactNode } from "react";
 import {
   definePluginApp,
   experimental_Diff as BbDiff,
+  experimental_ProviderModelPicker as ProviderModelPicker,
   experimental_useAppPanel,
   Markdown,
   ThreadChat,
@@ -254,6 +255,31 @@ function usePanelState(rpc: Rpc) {
   const query = useLiveQuery(() => rpc.call("getPanelState"), [rpc]);
   useRealtime(PANEL_STATE_CHANGED, query.refetch);
   return query;
+}
+
+/**
+ * Which model reviews run with. BB's own picker, so it offers what the
+ * composer does. The choice is kept on the server and applies to every review
+ * started after it, from the PR list or from a review's tab.
+ */
+function ReviewModelPicker({ rpc, repo }: { rpc: Rpc; repo: string | null }) {
+  const { data: reviewModel, refetch } = useLiveQuery(
+    () => rpc.call("getReviewModel", { repo }),
+    [rpc, repo],
+  );
+  // A choice made in the other surface, or another window.
+  useRealtime(PANEL_STATE_CHANGED, refetch);
+  // The picker needs a value to show, and there is none until either a model
+  // has been chosen or the repo's project has a default.
+  if (reviewModel === null) return null;
+  return (
+    <ProviderModelPicker
+      value={reviewModel}
+      onChange={(next) => {
+        rpc.call("setReviewModel", next).then(refetch, reportError);
+      }}
+    />
+  );
 }
 
 /** Refetches on mount and on every server "code-review-changed" signal. */
@@ -548,6 +574,7 @@ function PrListView({
           />
           Refresh
         </Button>
+        <ReviewModelPicker rpc={rpc} repo={repo} />
         {/* The list never refreshes on its own now, so say how old it is. */}
         {data?.fetchedAt ? (
           <span className="text-xs text-muted-foreground">
@@ -680,6 +707,7 @@ function ReviewControls({
           />
           {isRunning ? "Reviewing…" : review === null ? "Review this PR" : "Re-run review"}
         </Button>
+        <ReviewModelPicker rpc={rpc} repo={repo} />
         <span className="text-xs text-muted-foreground">
           {skills.length === 0 ? "Generic review" : `Skills: ${skills.join(", ")}`}
         </span>
