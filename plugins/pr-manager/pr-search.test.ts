@@ -78,7 +78,7 @@ describe("pull request details query", () => {
     // reads them all, and this query is the only place they come from.
     for (const field of [
       "reviewDecision", "reviewRequests", "reviews", "comments", "statusCheckRollup", "mergedAt", "isDraft",
-      "author", "submittedAt", "startedAt", "workflow", "headRefName", "baseRefName", "nameWithOwner",
+      "author", "submittedAt", "startedAt", "workflow", "runNumber", "event", "headRefName", "baseRefName", "nameWithOwner",
       "checkRunCountsByState", "statusContextCountsByState",
     ]) {
       expect(query).toContain(field);
@@ -134,9 +134,14 @@ describe("changeMarker", () => {
       .toBe(changeMarker("2026-09-01T00:00:00Z", counts({ FAILURE: 1, SUCCESS: 3 })));
   });
 
-  it("is the update time alone for a pull request with no checks", () => {
-    expect(changeMarker("2026-09-01T00:00:00Z", null)).toBe("2026-09-01T00:00:00Z");
-    expect(changeMarker("2026-09-01T00:00:00Z", { checkRunCountsByState: null, statusContextCountsByState: null })).toBe("2026-09-01T00:00:00Z");
+  it("is the same with no checks as with no count of them", () => {
+    expect(changeMarker("2026-09-01T00:00:00Z", { checkRunCountsByState: null, statusContextCountsByState: null }))
+      .toBe(changeMarker("2026-09-01T00:00:00Z", null));
+  });
+
+  it("never matches a marker saved before the rules for reading a status last changed", () => {
+    // What the previous version of the rules saved for this pull request.
+    expect(changeMarker("2026-09-01T00:00:00Z", counts({ CANCELLED: 1 }))).not.toBe("2026-09-01T00:00:00Z CANCELLED:1");
   });
 });
 
@@ -191,7 +196,7 @@ describe("fetchPullRequests", () => {
   it("fetches a saved pull request again once it has been merged", async () => {
     const saved = await gitHub([pullRequest(1)]).fetch([]);
     const fetched = await gitHub([pullRequest(1, { updatedAt: "2026-09-05T00:00:00Z", mergedAt: "2026-09-05T00:00:00Z" })]).fetch(saved);
-    expect(fetched.map((pr) => [pr.number, pr.status, pr.changeMarker])).toEqual([[1, "MERGED", "2026-09-05T00:00:00Z"]]);
+    expect(fetched.map((pr) => [pr.number, pr.status, pr.changeMarker])).toEqual([[1, "MERGED", changeMarker("2026-09-05T00:00:00Z", null)]]);
   });
 
   it("drops saved pull requests that the searches no longer find", async () => {

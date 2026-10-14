@@ -8,7 +8,7 @@ import {
 export type Gh = (args: string[]) => Promise<string>;
 
 interface Actor { __typename: string; login?: string; slug?: string }
-interface RollupContext extends RollupEntry { __typename: string; checkSuite?: { workflowRun?: { workflow?: { name?: string } } } }
+interface RollupContext extends RollupEntry { __typename: string; checkSuite?: { workflowRun?: { event?: string; runNumber?: number; workflow?: { name?: string } } } }
 interface CountByState { state: string; count: number }
 interface CheckCounts { checkRunCountsByState: CountByState[] | null; statusContextCountsByState: CountByState[] | null }
 interface HeadCommit<Contexts> { nodes: Array<{ commit: { statusCheckRollup: { contexts: Contexts } | null } }> }
@@ -59,7 +59,7 @@ export function pullRequestDetailsQuery(ids: string[]): string {
       comments(last:50){nodes{createdAt author{__typename login}}}
       commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){${CHECK_COUNTS} nodes{
         __typename
-        ... on CheckRun{name status conclusion startedAt checkSuite{workflowRun{workflow{name}}}}
+        ... on CheckRun{name status conclusion startedAt checkSuite{workflowRun{event runNumber workflow{name}}}}
         ... on StatusContext{context state createdAt}
       }}}}}}
     }
@@ -107,6 +107,10 @@ export async function listPullRequests(search: string, limit: number, gh: Gh): P
   return pullRequests;
 }
 
+// Starts every change marker, so that changing how a status is read from GitHub's data
+// works every saved status out again. Raise it with any such change: a saved status is
+// otherwise kept for as long as its pull request stays as it is.
+const STATUS_RULES_VERSION = "rules-2";
 // A pull request's `updatedAt` moves when it is commented on, reviewed, pushed to or
 // edited, but not when its checks start or finish, so the marker also carries how many
 // checks are in each state. Two equal markers mean the same status and summary. The
@@ -114,7 +118,7 @@ export async function listPullRequests(search: string, limit: number, gh: Gh): P
 export function changeMarker(updatedAt: string, checks: CheckCounts | null): string {
   const counts = [...checks?.checkRunCountsByState ?? [], ...checks?.statusContextCountsByState ?? []]
     .map(({ state, count }) => `${state}:${count}`).sort();
-  return [updatedAt, ...counts].join(" ");
+  return [STATUS_RULES_VERSION, updatedAt, ...counts].join(" ");
 }
 
 // Asks for each of `ids` in as few requests as GitHub allows, `batchSize` to a request.
@@ -140,7 +144,8 @@ function describePullRequest(details: PullRequestDetails): HostPullRequest {
     author: actorName(details.author), requestedReviewers,
     reviews: details.reviews.nodes.map((review) => ({ author: actorName(review.author), isBot: isBot(review.author), state: review.state, submittedAt: review.submittedAt })),
     comments: details.comments.nodes.map((comment) => ({ author: actorName(comment.author), isBot: isBot(comment.author), createdAt: comment.createdAt })),
-    checks: latestCheckRuns(rollup.map((entry) => normalizeCheck({ ...entry, workflowName: entry.checkSuite?.workflowRun?.workflow?.name }))) };
+    checks: latestCheckRuns(rollup.map(({ checkSuite, ...entry }) => normalizeCheck({ ...entry, workflowName: checkSuite?.workflowRun?.workflow?.name,
+      workflowEvent: checkSuite?.workflowRun?.event, runNumber: checkSuite?.workflowRun?.runNumber }))) };
   const status = classifyPullRequest(input);
   const latestFeedbackAt = status === "FEEDBACK" ? latestUnaddressedFeedbackAt(input) : null;
   const statusWhenMuted = classifyWithFeedbackMuted(input);
