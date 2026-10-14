@@ -2111,7 +2111,8 @@ interface ContextRow {
     async startReview({ repo, number, skills }) {
       await checkAuth();
       const review = await startReview(repo, number, skills);
-      // The caller navigates to this thread next, so its tab has to be there.
+      // The panel stays on its list, so the thread may be reached from the
+      // sidebar before "Open review" is ever pressed: the tab has to be there.
       if (review.threadId !== null) await ensureReviewTab(review.threadId);
       return { review };
     },
